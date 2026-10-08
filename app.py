@@ -2,10 +2,12 @@ import os
 import re
 import sys
 import time
+import json
 import uuid
 import shutil
 import socket
 import ipaddress
+import subprocess
 import threading
 from urllib.parse import urlparse
 from datetime import datetime
@@ -42,13 +44,38 @@ import yt_dlp
 
 app = Flask(__name__)
 
-# Base directory for downloads
+# Base directories
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 DOWNLOADS_DIR = os.path.join(BASE_DIR, "downloads")
-os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+TASKS_DIR = os.path.join(DOWNLOADS_DIR, "task_states")
 
-# In-memory download tasks tracking
-tasks = {}
+os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+os.makedirs(TASKS_DIR, exist_ok=True)
+
+# Shared persistent task storage across multiple Gunicorn workers
+def get_task_state(task_id):
+    """Retrieve task state from disk so any Gunicorn worker process can read it."""
+    state_file = os.path.join(TASKS_DIR, f"{task_id}.json")
+    if not os.path.exists(state_file):
+        return None
+    try:
+        with open(state_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def update_task_state(task_id, **kwargs):
+    """Atomically update task state on disk so all worker processes stay in sync."""
+    state_file = os.path.join(TASKS_DIR, f"{task_id}.json")
+    try:
+        current = get_task_state(task_id) or {}
+        current.update(kwargs)
+        tmp_file = f"{state_file}.tmp.{os.getpid()}"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(current, f)
+        os.replace(tmp_file, state_file)
+    except Exception as e:
+        print(f"[Warning] Task state update error: {e}")
 
 def sanitize_filename(name):
     """Sanitize string for safe filenames across platforms."""
@@ -123,20 +150,21 @@ def detect_platform(url):
     return "other"
 
 def cleanup_old_files():
-    """Periodically remove files older than 15 minutes from downloads folder."""
+    """Periodically remove files and task states older than 15 minutes."""
     while True:
         try:
             time.sleep(300)  # every 5 minutes
             now = time.time()
-            if os.path.exists(DOWNLOADS_DIR):
-                for f in os.listdir(DOWNLOADS_DIR):
-                    f_path = os.path.join(DOWNLOADS_DIR, f)
-                    if os.path.isfile(f_path):
-                        if now - os.path.getmtime(f_path) > 900:  # 15 minutes
-                            try:
-                                os.remove(f_path)
-                            except Exception:
-                                pass
+            for directory in [DOWNLOADS_DIR, TASKS_DIR]:
+                if os.path.exists(directory):
+                    for f in os.listdir(directory):
+                        f_path = os.path.join(directory, f)
+                        if os.path.isfile(f_path):
+                            if now - os.path.getmtime(f_path) > 900:  # 15 minutes
+                                try:
+                                    os.remove(f_path)
+                                except Exception:
+                                    pass
         except Exception:
             pass
 
@@ -144,13 +172,34 @@ def cleanup_old_files():
 cleanup_thread = threading.Thread(target=cleanup_old_files, daemon=True)
 cleanup_thread.start()
 
+# Auto-update yt-dlp periodically in background so YouTube algorithm changes never break downloads
+def auto_update_ytdlp_daemon():
+    """Continuously keep yt-dlp updated to the latest version."""
+    time.sleep(20)  # wait 20s after boot
+    while True:
+        try:
+            print("[+] Running auto-update check for yt-dlp...")
+            res = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp", "--no-cache-dir"],
+                capture_output=True,
+                text=True,
+                timeout=180
+            )
+            print("[+] yt-dlp auto-update check completed.")
+        except Exception as e:
+            print(f"[-] yt-dlp auto-update notice: {e}")
+        time.sleep(43200)  # Check every 12 hours
+
+auto_update_thread = threading.Thread(target=auto_update_ytdlp_daemon, daemon=True)
+auto_update_thread.start()
+
 @app.route("/")
 def index():
     return render_template("index.html")
 
 @app.route("/api/info", methods=["POST"])
 def get_video_info():
-    """Fetch video metadata securely without downloading."""
+    """Fetch video metadata securely with robust fallback clients."""
     data = request.get_json(force=True, silent=True) or {}
     url = (data.get("url") or "").strip()
 
@@ -170,12 +219,18 @@ def get_video_info():
 
     platform = detect_platform(url)
 
+    # Resilient options: Android and iOS player clients bypass web player signature changes
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
-        "socket_timeout": 15,
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "socket_timeout": 20,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web", "ios"]
+            }
+        },
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     }
 
     try:
@@ -241,16 +296,17 @@ def get_video_info():
         return jsonify({"success": False, "error": err_text}), 400
 
 def run_download_task(task_id, url, quality, title_hint):
-    """Execute download in background thread securely and update progress."""
-    tasks[task_id] = {
-        "status": "downloading",
-        "percent": 0,
-        "speed": "Connecting...",
-        "eta": "--",
-        "filename": "",
-        "filepath": "",
-        "error": None
-    }
+    """Execute download in background thread and update shared persistent task state."""
+    update_task_state(
+        task_id,
+        status="downloading",
+        percent=0,
+        speed="Connecting...",
+        eta="--",
+        filename="",
+        filepath="",
+        error=None
+    )
 
     sanitized_title = sanitize_filename(title_hint)
     output_template = os.path.join(DOWNLOADS_DIR, f"{task_id}_{sanitized_title}.%(ext)s")
@@ -273,23 +329,34 @@ def run_download_task(task_id, url, quality, title_hint):
             eta_seconds = d.get("eta")
             eta_str = f"{eta_seconds}s" if eta_seconds is not None else "--"
 
-            tasks[task_id]["percent"] = percent
-            tasks[task_id]["speed"] = speed_str
-            tasks[task_id]["eta"] = eta_str
-            tasks[task_id]["status"] = "downloading"
+            update_task_state(
+                task_id,
+                percent=percent,
+                speed=speed_str,
+                eta=eta_str,
+                status="downloading"
+            )
 
         elif d.get("status") == "finished":
-            tasks[task_id]["percent"] = 100
-            tasks[task_id]["status"] = "processing"
-            tasks[task_id]["speed"] = "Processing / Merging..."
+            update_task_state(
+                task_id,
+                percent=100,
+                status="processing",
+                speed="Processing / Merging..."
+            )
 
     ydl_opts = {
         "outtmpl": output_template,
         "progress_hooks": [progress_hook],
         "quiet": True,
         "no_warnings": True,
-        "socket_timeout": 30,
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "socket_timeout": 60,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web", "ios"]
+            }
+        },
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     }
 
     if FFMPEG_PATH:
@@ -323,23 +390,34 @@ def run_download_task(task_id, url, quality, title_hint):
         target_file = None
         for f in os.listdir(DOWNLOADS_DIR):
             if f.startswith(task_id):
-                target_file = os.path.join(DOWNLOADS_DIR, f)
-                break
+                candidate = os.path.join(DOWNLOADS_DIR, f)
+                if os.path.isfile(candidate) and not f.endswith(".json"):
+                    target_file = candidate
+                    break
 
         if target_file and os.path.exists(target_file):
             final_ext = os.path.splitext(target_file)[1]
             display_name = f"{sanitized_title}{final_ext}"
-            tasks[task_id]["status"] = "completed"
-            tasks[task_id]["percent"] = 100
-            tasks[task_id]["filepath"] = target_file
-            tasks[task_id]["filename"] = display_name
-            tasks[task_id]["speed"] = "Done!"
+            update_task_state(
+                task_id,
+                status="completed",
+                percent=100,
+                filepath=target_file,
+                filename=display_name,
+                speed="Done!"
+            )
         else:
-            tasks[task_id]["status"] = "error"
-            tasks[task_id]["error"] = "Downloaded file could not be located."
+            update_task_state(
+                task_id,
+                status="error",
+                error="Downloaded file could not be located on server."
+            )
     except Exception as e:
-        tasks[task_id]["status"] = "error"
-        tasks[task_id]["error"] = "Download failed. Kripya dobara try karein."
+        update_task_state(
+            task_id,
+            status="error",
+            error=f"Download failed: {str(e)[:150]}"
+        )
 
 @app.route("/api/download/start", methods=["POST"])
 def start_download():
@@ -355,7 +433,6 @@ def start_download():
     if len(url) > 2048:
         return jsonify({"success": False, "error": "URL length exceeded limit"}), 400
 
-    # Whitelist quality parameter to prevent parameter pollution
     allowed_qualities = {"best", "1080", "720", "480", "360", "mp3"}
     if quality not in allowed_qualities:
         quality = "best"
@@ -366,6 +443,18 @@ def start_download():
         return jsonify({"success": False, "error": err_reason or "Invalid URL entered."}), 400
 
     task_id = uuid.uuid4().hex[:12]
+
+    # Pre-initialize task state on disk immediately before returning
+    update_task_state(
+        task_id,
+        status="starting",
+        percent=0,
+        speed="Initializing...",
+        eta="--",
+        filename="",
+        filepath="",
+        error=None
+    )
 
     thread = threading.Thread(
         target=run_download_task,
@@ -378,16 +467,27 @@ def start_download():
 
 @app.route("/api/download/status/<task_id>", methods=["GET"])
 def check_status(task_id):
-    """Check progress of a download task with sanitized task_id."""
+    """Check progress of a download task from shared disk state."""
     if not re.match(r"^[a-fA-F0-9]{8,32}$", task_id):
         return jsonify({"status": "error", "error": "Invalid task ID format"}), 400
 
-    task = tasks.get(task_id)
+    task = get_task_state(task_id)
     if not task:
+        # Check if file has already completed and is in downloads directory
+        for f in os.listdir(DOWNLOADS_DIR):
+            if f.startswith(task_id) and not f.endswith(".json"):
+                return jsonify({
+                    "status": "completed",
+                    "percent": 100,
+                    "speed": "Done!",
+                    "eta": "0s",
+                    "filename": f,
+                    "error": None
+                })
         return jsonify({"status": "not_found", "error": "Task not found"}), 404
 
     return jsonify({
-        "status": task["status"],
+        "status": task.get("status", "pending"),
         "percent": task.get("percent", 0),
         "speed": task.get("speed", ""),
         "eta": task.get("eta", ""),
@@ -397,27 +497,36 @@ def check_status(task_id):
 
 @app.route("/api/download/file/<task_id>", methods=["GET"])
 def download_file(task_id):
-    """Send completed file to client with strict path-traversal prevention."""
+    """Send completed file to client with fallback file detection and path validation."""
     if not re.match(r"^[a-fA-F0-9]{8,32}$", task_id):
         abort(400, description="Invalid task ID format")
 
-    task = tasks.get(task_id)
-    if not task or task.get("status") != "completed":
-        abort(404, description="File not ready or expired")
+    task = get_task_state(task_id)
+    target_file = None
 
-    filepath = task.get("filepath")
-    if not filepath or not os.path.exists(filepath):
-        abort(404, description="File not found on server")
+    if task and task.get("filepath") and os.path.exists(task.get("filepath")):
+        target_file = task.get("filepath")
+    else:
+        # Fallback file discovery in DOWNLOADS_DIR
+        for f in os.listdir(DOWNLOADS_DIR):
+            if f.startswith(task_id) and not f.endswith(".json"):
+                candidate = os.path.join(DOWNLOADS_DIR, f)
+                if os.path.isfile(candidate):
+                    target_file = candidate
+                    break
 
-    # Path traversal validation: ensure target file is strictly inside DOWNLOADS_DIR
+    if not target_file or not os.path.exists(target_file):
+        abort(404, description="File not found or expired on server")
+
+    # Path traversal validation
     real_downloads_dir = os.path.realpath(DOWNLOADS_DIR)
-    real_filepath = os.path.realpath(filepath)
+    real_filepath = os.path.realpath(target_file)
     if not real_filepath.startswith(real_downloads_dir + os.sep):
         abort(403, description="Access forbidden: Path outside downloads directory")
 
-    filename = task.get("filename") or os.path.basename(filepath)
+    filename = (task.get("filename") if task else None) or os.path.basename(target_file)
     return send_file(
-        filepath,
+        real_filepath,
         as_attachment=True,
         download_name=filename,
         mimetype="audio/mpeg" if filename.endswith(".mp3") else "video/mp4"
@@ -425,32 +534,13 @@ def download_file(task_id):
 
 @app.after_request
 def add_security_headers(response):
-    """
-    Comprehensive Security Hardening:
-    - Protects against Clickjacking (X-Frame-Options: SAMEORIGIN)
-    - Prevents MIME-type sniffing (X-Content-Type-Options: nosniff)
-    - Enforces modern HTTPS (Strict-Transport-Security)
-    - Mitigates XSS & Code Injection (Content-Security-Policy)
-    - Restricts Referrer leaking (Referrer-Policy)
-    - Disallows risky browser APIs (Permissions-Policy)
-    - Restricts CORS: No open wildcard '*' so other sites cannot read user responses
-    """
-    # 1. Prevent MIME-type sniffing
+    """Enterprise security headers configuration."""
     response.headers["X-Content-Type-Options"] = "nosniff"
-
-    # 2. Prevent Clickjacking
     response.headers["X-Frame-Options"] = "SAMEORIGIN"
-
-    # 3. Enforce Strict HTTPS
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
-
-    # 4. Referrer Policy
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-
-    # 5. Restrict permissions
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
 
-    # 6. Content Security Policy (allows self, FontAwesome CDN, Google Fonts, and Monetag ad domains)
     csp_policy = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://*.monetag.com https://*.alwingulla.com; "
@@ -463,9 +553,6 @@ def add_security_headers(response):
         "base-uri 'self';"
     )
     response.headers["Content-Security-Policy"] = csp_policy
-
-    # Note: Removed 'Access-Control-Allow-Origin: *' to fix Antideploy Medium vulnerability.
-    # Same-origin requests work natively without CORS, blocking malicious external sites.
 
     return response
 

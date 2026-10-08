@@ -295,8 +295,11 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 
+    let retryNotFoundCount = 0;
+
     function pollDownloadProgress(taskId) {
         if (activePollTimer) clearInterval(activePollTimer);
+        retryNotFoundCount = 0;
 
         activePollTimer = setInterval(async () => {
             try {
@@ -304,6 +307,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 const data = await resp.json();
 
                 if (!resp.ok || data.status === "error") {
+                    // Allow up to 4 retries for initial task registration across workers
+                    if (data.status === "not_found" && retryNotFoundCount < 4) {
+                        retryNotFoundCount++;
+                        return; // continue polling on next interval
+                    }
+
                     clearInterval(activePollTimer);
                     startDownloadBtn.disabled = false;
                     progressStatusText.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Error';

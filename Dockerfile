@@ -21,12 +21,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application source code
 COPY . .
 
-# Ensure downloads directory exists
-RUN mkdir -p downloads
+# Ensure downloads and task states directories exist
+RUN mkdir -p downloads/task_states
 
 # Port configuration
 ENV PORT=5000
 EXPOSE 5000
 
-# Start production server with gunicorn
-CMD ["gunicorn", "app:app", "--workers", "2", "--timeout", "180", "--bind", "0.0.0.0:5000"]
+# Start production server with gunicorn threads
+CMD ["gunicorn", "app:app", "--workers", "2", "--threads", "4", "--timeout", "180", "--bind", "0.0.0.0:5000"]
