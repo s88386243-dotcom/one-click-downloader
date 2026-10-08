@@ -238,13 +238,22 @@ def extract_video_info_resilient(url):
             pass
 
     if is_yt:
-        strategies = [
-            {"player_client": ["android"], "player_skip": ["webpage"]},
-            {"player_client": ["android", "ios"], "player_skip": ["webpage"]},
-            {"player_client": ["mweb", "android"]},
-            {"player_client": ["default", "-android_sdkless"]},
-            {}
-        ]
+        if has_cookies:
+            strategies = [
+                {},
+                {"player_client": ["web"]},
+                {"player_client": ["mweb"]},
+                {"player_client": ["tv"]},
+                {"player_client": ["android"], "player_skip": ["webpage"]},
+            ]
+        else:
+            strategies = [
+                {"player_client": ["android"], "player_skip": ["webpage"]},
+                {"player_client": ["android", "ios"], "player_skip": ["webpage"]},
+                {"player_client": ["mweb", "android"]},
+                {"player_client": ["default", "-android_sdkless"]},
+                {}
+            ]
     else:
         strategies = [{}]
 
@@ -456,13 +465,22 @@ def run_download_task(task_id, url, quality, title_hint):
             pass
 
     if is_yt:
-        yt_strategies = [
-            {"player_client": ["android"], "player_skip": ["webpage"]},
-            {"player_client": ["android", "ios"], "player_skip": ["webpage"]},
-            {"player_client": ["mweb", "android"]},
-            {"player_client": ["default", "-android_sdkless"]},
-            {}
-        ]
+        if has_cookies:
+            yt_strategies = [
+                {},
+                {"player_client": ["web"]},
+                {"player_client": ["mweb"]},
+                {"player_client": ["tv"]},
+                {"player_client": ["android"], "player_skip": ["webpage"]},
+            ]
+        else:
+            yt_strategies = [
+                {"player_client": ["android"], "player_skip": ["webpage"]},
+                {"player_client": ["android", "ios"], "player_skip": ["webpage"]},
+                {"player_client": ["mweb", "android"]},
+                {"player_client": ["default", "-android_sdkless"]},
+                {}
+            ]
     else:
         yt_strategies = [{}]
 
