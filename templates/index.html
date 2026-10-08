@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>One Click Downloader - Instagram, Facebook & YouTube Video Downloader</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Outfit:wght@500;600;700;800;900&display=swap" rel="stylesheet">
+    <!-- Font Awesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+
+    <!-- ======================================================== -->
+    <!-- 💰 MONETAG VERIFICATION & AD SCRIPTS                     -->
+    <!-- 1. Monetag site verification meta tag yahan paste karein: -->
+    <!-- ======================================================== -->
+    <!-- <meta name="monetag" content="YOUR_MONETAG_VERIFICATION_CODE_HERE"> -->
+
+    <!-- ======================================================== -->
+    <!-- 2. Monetag Popunder / OnClick / Vignette Script yahan:   -->
+    <!-- ======================================================== -->
+    <!-- PASTE_MONETAG_POPUNDER_SCRIPT_HERE -->
+</head>
+<body>
+    <!-- Background Gradient Glows -->
+    <div class="ambient-glow glow-1"></div>
+    <div class="ambient-glow glow-2"></div>
+    <div class="ambient-glow glow-3"></div>
+
+    <!-- Navigation Bar -->
+    <header class="navbar">
+        <div class="nav-container">
+            <a href="/" class="logo">
+                <div class="logo-icon">
+                    <i class="fa-solid fa-bolt-lightning"></i>
+                </div>
+                <div class="logo-text">
+                    <span class="logo-title">One Click</span>
+                    <span class="logo-subtitle">DOWNLOADER</span>
+                </div>
+            </a>
+            
+            <div class="nav-platforms">
+                <span class="nav-platform ig"><i class="fa-brands fa-instagram"></i> Instagram</span>
+                <span class="nav-platform fb"><i class="fa-brands fa-facebook"></i> Facebook</span>
+                <span class="nav-platform yt"><i class="fa-brands fa-youtube"></i> YouTube</span>
+            </div>
+
+            <div class="nav-actions">
+                <button id="historyToggleBtn" class="btn-ghost" title="Recent Downloads">
+                    <i class="fa-solid fa-clock-rotate-left"></i>
+                    <span>History</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content Container -->
+    <main class="main-wrapper">
+        <!-- Hero Section -->
+        <section class="hero-section">
+            <div class="badge-pill">
+                <span class="pulse-dot"></span>
+                <span>⚡ All-in-One Fast & Free Video Downloader</span>
+            </div>
+            <h1 class="hero-title">
+                One Click <span class="gradient-text">Downloader</span>
+            </h1>
+            <p class="hero-subtitle">
+                Instagram Reels, Facebook Videos aur YouTube Videos ko <strong>1-Click</strong> me High Quality (1080p, 720p, MP3) me download karein!
+            </p>
+
+            <!-- Supported Badges Strip -->
+            <div class="platforms-ribbon">
+                <div class="platform-chip chip-ig">
+                    <i class="fa-brands fa-instagram"></i>
+                    <span>Instagram Reels & Stories</span>
+                </div>
+                <div class="platform-chip chip-fb">
+                    <i class="fa-brands fa-facebook"></i>
+                    <span>Facebook Videos & Reels</span>
+                </div>
+                <div class="platform-chip chip-yt">
+                    <i class="fa-brands fa-youtube"></i>
+                    <span>YouTube & Shorts</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Downloader Box Section -->
+        <section class="downloader-container">
+            <div class="downloader-card">
+                <!-- Input Row -->
+                <div class="input-group">
+                    <div class="input-icon-box">
+                        <i id="detectedIcon" class="fa-solid fa-link"></i>
+                    </div>
+                    <input 
+                        type="url" 
+                        id="videoUrlInput" 
+                        placeholder="Video link yahan paste karein (e.g. Instagram Reel, YouTube, Facebook)..."
+                        autocomplete="off"
+                        spellcheck="false"
+                    />
+                    <div class="input-actions">
+                        <button id="clearBtn" class="action-btn" title="Clear text" style="display: none;">
+                            <i class="fa-solid fa-xmark"></i>
+                        </button>
+                        <button id="pasteBtn" class="action-btn" title="Paste from clipboard">
+                            <i class="fa-regular fa-paste"></i>
+                            <span>Paste</span>
+                        </button>
+                    </div>
+                    <button id="fetchBtn" class="btn-primary">
+                        <span class="btn-text">
+                            <i class="fa-solid fa-arrow-down-to-bracket"></i> Fetch Video
+                        </span>
+                        <span class="btn-loader" style="display: none;">
+                            <i class="fa-solid fa-circle-notch fa-spin"></i> Fetching...
+                        </span>
+                    </button>
+                </div>
+
+                <!-- Platform Detection Indicator -->
+                <div id="detectionBadge" class="detection-pill" style="display: none;">
+                    <span id="detectedName">Platform detected</span>
+                </div>
+
+                <!-- Error Alert Box -->
+                <div id="errorAlert" class="alert-box alert-error" style="display: none;">
+                    <i class="fa-solid fa-circle-exclamation"></i>
+                    <span id="errorMessage">Kuch gadbad hui. Kripya dobara try karein.</span>
+                </div>
+            </div>
+
+            <!-- Video Preview & Format Selection Card -->
+            <div id="resultCard" class="result-card" style="display: none;">
+                <div class="video-preview-header">
+                    <div class="thumbnail-wrapper">
+                        <img id="videoThumb" src="" alt="Video thumbnail" />
+                        <span id="videoDuration" class="duration-badge">00:00</span>
+                        <div class="thumb-platform" id="thumbPlatformBadge">
+                            <i class="fa-solid fa-play"></i>
+                        </div>
+                    </div>
+                    <div class="video-meta">
+                        <span id="videoSourceTag" class="source-tag">YouTube</span>
+                        <h3 id="videoTitle" class="video-title">Video Title Placeholder</h3>
+                        <p class="video-author">
+                            <i class="fa-regular fa-user"></i>
+                            <span id="videoAuthorName">Channel Name</span>
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Quality Selection Area -->
+                <div class="format-selection-area">
+                    <h4 class="section-label"><i class="fa-solid fa-sliders"></i> Select Quality / Format:</h4>
+                    <div id="qualitiesList" class="qualities-grid">
+                        <!-- Format Pills dynamically injected here -->
+                    </div>
+                </div>
+
+                <!-- Download CTA -->
+                <div class="download-action-bar">
+                    <button id="startDownloadBtn" class="btn-download">
+                        <i class="fa-solid fa-download"></i>
+                        <span>Download Now</span>
+                    </button>
+                </div>
+
+                <!-- Live Progress Card -->
+                <div id="progressBox" class="progress-box" style="display: none;">
+                    <div class="progress-header">
+                        <span id="progressStatusText" class="progress-status">
+                            <i class="fa-solid fa-circle-notch fa-spin"></i> Preparing video...
+                        </span>
+                        <span id="progressPercent" class="progress-percent">0%</span>
+                    </div>
+                    
+                    <div class="progress-bar-track">
+                        <div id="progressBarFill" class="progress-bar-fill" style="width: 0%;"></div>
+                    </div>
+
+                    <div class="progress-footer">
+                        <span id="progressSpeed"><i class="fa-solid fa-gauge-high"></i> Speed: --</span>
+                        <span id="progressEta"><i class="fa-regular fa-clock"></i> ETA: --</span>
+                    </div>
+                </div>
+
+                <!-- Download Ready Notification -->
+                <div id="downloadReadyBox" class="download-ready-box" style="display: none;">
+                    <i class="fa-solid fa-circle-check"></i>
+                    <div>
+                        <strong>Video taiyar ho gaya!</strong>
+                        <p>Aapka browser file download kar raha hai. Agar download start na ho, toh neeche click karein:</p>
+                        <a id="directDownloadLink" href="#" class="btn-manual-download">
+                            <i class="fa-solid fa-cloud-arrow-down"></i> Direct Download
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ======================================================== -->
+        <!-- 💰 MONETAG IN-PAGE BANNER / NATIVE AD CONTAINER          -->
+        <!-- Aap apna Monetag Banner ya In-Page Push script yahan     -->
+        <!-- paste kar sakte hain:                                    -->
+        <!-- ======================================================== -->
+        <div class="ad-banner-container">
+            <span class="ad-label">Advertisement</span>
+            <div class="ad-slot" id="monetag-banner-slot">
+                <!-- PASTE_MONETAG_BANNER_OR_NATIVE_AD_CODE_HERE -->
+                <div class="ad-placeholder-text">
+                    <i class="fa-solid fa-rectangle-ad"></i>
+                    <span>Monetag Ad Space (Ready for ads)</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Features Showcase Section -->
+        <section class="features-section">
+            <h2 class="features-title">One Click Downloader Kyun Best Hai?</h2>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon f-speed">
+                        <i class="fa-solid fa-bolt"></i>
+                    </div>
+                    <h3>Super Fast Speed</h3>
+                    <p>High-speed servers se bina wait kiye kuch hi seconds me direct video download karein.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon f-quality">
+                        <i class="fa-solid fa-film"></i>
+                    </div>
+                    <h3>HD 1080p & MP3</h3>
+                    <p>Crystal clear 1080p Full HD, 720p HD, ya MP3 Audio format me download karne ki suvidha.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon f-multi">
+                        <i class="fa-solid fa-layer-group"></i>
+                    </div>
+                    <h3>All Platforms Supported</h3>
+                    <p>Instagram Reels, Facebook Watch, YouTube Shorts, Videos sab ek hi jagah download karein.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon f-safe">
+                        <i class="fa-solid fa-shield-halved"></i>
+                    </div>
+                    <h3>100% Free & Safe</h3>
+                    <p>Bina kisi account, bina login ya personal details ke unlimited downloads bilkul muft.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- How It Works Section -->
+        <section class="how-it-works-section">
+            <h2 class="features-title">Video Download Kaise Karein?</h2>
+            <div class="steps-grid">
+                <div class="step-card">
+                    <div class="step-number">1</div>
+                    <div class="step-icon"><i class="fa-solid fa-copy"></i></div>
+                    <h3>Copy Link</h3>
+                    <p>Instagram Reel, YouTube ya Facebook video ka link copy karein (Share -> Copy Link).</p>
+                </div>
+                <div class="step-card">
+                    <div class="step-number">2</div>
+                    <div class="step-icon"><i class="fa-solid fa-paste"></i></div>
+                    <h3>Paste Link</h3>
+                    <p>One Click Downloader ke box me link paste karein aur 'Fetch Video' par click karein.</p>
+                </div>
+                <div class="step-card">
+                    <div class="step-number">3</div>
+                    <div class="step-icon"><i class="fa-solid fa-circle-down"></i></div>
+                    <h3>1-Click Download</h3>
+                    <p>Apna manpasand resolution (1080p, 720p, MP3) select karein aur download shuru karein!</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- FAQ Section -->
+        <section class="faq-section">
+            <h2 class="features-title">Aksar Puche Jaane Wale Sawaal (FAQ)</h2>
+            <div class="faq-list">
+                <details class="faq-item" open>
+                    <summary>Kya One Click Downloader use karna bilkul free hai?</summary>
+                    <p>Haan, One Click Downloader 100% free hai. Aap jitne chahe utne videos bina kisi fees ya subscription ke download kar sakte hain.</p>
+                </details>
+                <details class="faq-item">
+                    <summary>Kya Instagram Reels aur Facebook Watch videos download ho sakte hain?</summary>
+                    <p>Haan! Instagram Reels, Posts, IGTV aur Facebook ke sabhi public videos aur reels aasaani se high quality me download ho jate hain.</p>
+                </details>
+                <details class="faq-item">
+                    <summary>Kya mai YouTube video ko MP3 audio me convert kar sakta hoon?</summary>
+                    <p>Bilkul! Format selection me 'Audio Only (MP3)' option chunein aur One Click Downloader automatically video ko MP3 audio file me convert karke download de dega.</p>
+                </details>
+                <details class="faq-item">
+                    <summary>Video mere device me kahan save hota hai?</summary>
+                    <p>Video aapke mobile ya computer ke standard <strong>Downloads</strong> folder me save hota hai.</p>
+                </details>
+            </div>
+        </section>
+    </main>
+
+    <!-- Recent History Drawer / Modal -->
+    <div id="historyDrawer" class="history-drawer">
+        <div class="drawer-header">
+            <h3><i class="fa-solid fa-clock-rotate-left"></i> Download History</h3>
+            <div class="drawer-header-actions">
+                <button id="clearHistoryBtn" class="btn-text-danger" title="Clear History">Clear</button>
+                <button id="closeHistoryBtn" class="btn-close" title="Close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+        </div>
+        <div id="historyList" class="drawer-body">
+            <!-- Dynamically injected history items -->
+            <p class="empty-history-text">Abhi tak koi video download nahi kiya gaya hai.</p>
+        </div>
+    </div>
+    <div id="drawerOverlay" class="drawer-overlay"></div>
+
+    <!-- Toast Notifications -->
+    <div id="toast" class="toast">
+        <span id="toastMsg">Notification message</span>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="footer-container">
+            <div class="footer-logo">
+                <i class="fa-solid fa-bolt-lightning"></i> One Click Downloader
+            </div>
+            <p class="footer-disclaimer">
+                One Click Downloader is intended for personal and educational use. Please respect copyright laws and terms of service of each platform.
+            </p>
+            <p class="footer-copy">© 2026 One Click Downloader. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+downloads/*
+!downloads/.gitkeep
+__pycache__/
+*.pyc
+*.mp4
+*.mp3
+.venv/
+.env
