@@ -197,6 +197,15 @@ auto_update_thread.start()
 def index():
     return render_template("index.html")
 
+@app.route("/sw.js")
+def serve_sw():
+    """Serve Monetag verification & PWA service worker at site root."""
+    return send_file(os.path.join(BASE_DIR, "sw.js"), mimetype="application/javascript")
+
+@app.route("/service-worker.js")
+def serve_service_worker():
+    return send_file(os.path.join(BASE_DIR, "sw.js"), mimetype="application/javascript")
+
 @app.route("/api/info", methods=["POST"])
 def get_video_info():
     """Fetch video metadata securely with robust fallback clients."""
@@ -543,11 +552,12 @@ def add_security_headers(response):
 
     csp_policy = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://*.monetag.com https://*.alwingulla.com; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://*.monetag.com https://*.alwingulla.com https://*.3nbf4.com https://3nbf4.com; "
+        "worker-src 'self' blob: https: https://*.3nbf4.com; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; "
         "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; "
         "img-src 'self' data: https:; "
-        "connect-src 'self' https:; "
+        "connect-src 'self' https: https://*.3nbf4.com https://*.monetag.com; "
         "frame-src 'self' https:; "
         "object-src 'none'; "
         "base-uri 'self';"

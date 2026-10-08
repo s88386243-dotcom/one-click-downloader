@@ -448,10 +448,10 @@ document.addEventListener("DOMContentLoaded", () => {
         fetchVideoDetails();
     }
 
-    // Register Service Worker for PWA
+    // Register Service Worker for Monetag and PWA
     if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
-            navigator.serviceWorker.register('/static/sw.js').catch(err => {
+            navigator.serviceWorker.register('/sw.js').catch(err => {
                 console.log('SW registration note:', err);
             });
         });
