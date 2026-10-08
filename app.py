@@ -206,6 +206,14 @@ def serve_sw():
 def serve_service_worker():
     return send_file(os.path.join(BASE_DIR, "sw.js"), mimetype="application/javascript")
 
+@app.route("/robots.txt")
+def serve_robots():
+    return send_file(os.path.join(BASE_DIR, "robots.txt"), mimetype="text/plain")
+
+@app.route("/sitemap.xml")
+def serve_sitemap():
+    return send_file(os.path.join(BASE_DIR, "sitemap.xml"), mimetype="application/xml")
+
 @app.route("/api/info", methods=["POST"])
 def get_video_info():
     """Fetch video metadata securely with robust fallback clients."""

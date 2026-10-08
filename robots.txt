@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /downloads/
+
+Sitemap: https://one-click-downloader.antideploy.app/sitemap.xml
