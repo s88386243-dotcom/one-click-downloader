@@ -227,9 +227,10 @@ def extract_video_info_resilient(url):
     is_yt = "youtube.com" in url.lower() or "youtu.be" in url.lower()
     if is_yt:
         strategies = [
-            {"player_client": ["ios", "android"]},
+            {"player_client": ["default", "-android_sdkless"]},
+            {"player_client": ["android"], "player_skip": ["webpage"]},
+            {"player_client": ["mweb", "android"]},
             {"player_client": ["android"]},
-            {"player_client": ["ios"]},
             {}
         ]
     else:
@@ -403,7 +404,8 @@ def run_download_task(task_id, url, quality, title_hint):
         "socket_timeout": 60,
         "extractor_args": {
             "youtube": {
-                "player_client": ["ios", "android"]
+                "player_client": ["default", "-android_sdkless"],
+                "player_skip": ["webpage"]
             }
         },
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
