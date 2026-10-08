@@ -225,12 +225,24 @@ def extract_video_info_resilient(url):
     We prioritize 'ios' and 'android' mobile clients which are immune to web challenge blocks.
     """
     is_yt = "youtube.com" in url.lower() or "youtu.be" in url.lower()
+    cookie_path = os.path.join(BASE_DIR, "cookies.txt")
+    has_cookies = os.path.isfile(cookie_path) and os.path.getsize(cookie_path) > 10
+
+    env_cookies = os.environ.get("YOUTUBE_COOKIES")
+    if env_cookies and not has_cookies:
+        try:
+            with open(cookie_path, "w", encoding="utf-8") as cf:
+                cf.write(env_cookies)
+            has_cookies = True
+        except Exception:
+            pass
+
     if is_yt:
         strategies = [
-            {"player_client": ["default", "-android_sdkless"]},
             {"player_client": ["android"], "player_skip": ["webpage"]},
+            {"player_client": ["android", "ios"], "player_skip": ["webpage"]},
             {"player_client": ["mweb", "android"]},
-            {"player_client": ["android"]},
+            {"player_client": ["default", "-android_sdkless"]},
             {}
         ]
     else:
@@ -247,6 +259,8 @@ def extract_video_info_resilient(url):
         }
         if strat:
             ydl_opts["extractor_args"] = {"youtube": strat}
+        if has_cookies:
+            ydl_opts["cookiefile"] = cookie_path
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -402,12 +416,6 @@ def run_download_task(task_id, url, quality, title_hint):
         "quiet": True,
         "no_warnings": True,
         "socket_timeout": 60,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["default", "-android_sdkless"],
-                "player_skip": ["webpage"]
-            }
-        },
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     }
 
@@ -434,9 +442,52 @@ def run_download_task(task_id, url, quality, title_hint):
         ydl_opts["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
         ydl_opts["merge_output_format"] = "mp4"
 
+    is_yt = "youtube.com" in url.lower() or "youtu.be" in url.lower()
+    cookie_path = os.path.join(BASE_DIR, "cookies.txt")
+    has_cookies = os.path.isfile(cookie_path) and os.path.getsize(cookie_path) > 10
+
+    env_cookies = os.environ.get("YOUTUBE_COOKIES")
+    if env_cookies and not has_cookies:
+        try:
+            with open(cookie_path, "w", encoding="utf-8") as cf:
+                cf.write(env_cookies)
+            has_cookies = True
+        except Exception:
+            pass
+
+    if is_yt:
+        yt_strategies = [
+            {"player_client": ["android"], "player_skip": ["webpage"]},
+            {"player_client": ["android", "ios"], "player_skip": ["webpage"]},
+            {"player_client": ["mweb", "android"]},
+            {"player_client": ["default", "-android_sdkless"]},
+            {}
+        ]
+    else:
+        yt_strategies = [{}]
+
+    download_success = False
+    last_download_err = None
+
+    for strat in yt_strategies:
+        current_opts = dict(ydl_opts)
+        if strat:
+            current_opts["extractor_args"] = {"youtube": strat}
+        if has_cookies:
+            current_opts["cookiefile"] = cookie_path
+
+        try:
+            with yt_dlp.YoutubeDL(current_opts) as ydl:
+                ydl.download([url])
+            download_success = True
+            break
+        except Exception as e:
+            last_download_err = e
+            continue
+
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        if not download_success:
+            raise last_download_err or Exception("Download failed.")
 
         # Locate generated file
         target_file = None
@@ -465,10 +516,12 @@ def run_download_task(task_id, url, quality, title_hint):
                 error="Downloaded file could not be located on server."
             )
     except Exception as e:
+        err_msg = str(e)
+        clean_hint = re.sub(r'ERROR:\s*\[.*?\]\s*', '', err_msg.strip().splitlines()[-1] if err_msg else "").strip()
         update_task_state(
             task_id,
             status="error",
-            error=f"Download failed: {str(e)[:150]}"
+            error=f"Download failed: {clean_hint[:120]}"
         )
 
 @app.route("/api/download/start", methods=["POST"])
