@@ -222,7 +222,8 @@ def extract_video_info_resilient(url):
     """
     Extract video info with resilient fallback strategies.
     YouTube's web client blocks cloud IPs and requires JS challenges.
-    We prioritize 'ios' and 'android' mobile clients which are immune to web challenge blocks.
+    We prioritize 'android' mobile clients which are immune to web challenge blocks.
+    Cachedir is disabled to prevent poisoned session tokens across downloads.
     """
     is_yt = "youtube.com" in url.lower() or "youtu.be" in url.lower()
     cookie_path = os.path.join(BASE_DIR, "cookies.txt")
@@ -241,8 +242,8 @@ def extract_video_info_resilient(url):
         strategies = [
             {"extractor_args": {"youtube": {"player_client": ["android"], "player_skip": ["webpage"]}}, "use_cookies": False},
             {"extractor_args": {"youtube": {"player_client": ["android", "ios"], "player_skip": ["webpage"]}}, "use_cookies": False},
-            {"extractor_args": {}, "use_cookies": has_cookies},
             {"extractor_args": {"youtube": {"player_client": ["mweb", "android"]}}, "use_cookies": False},
+            {"extractor_args": {}, "use_cookies": has_cookies},
             {"extractor_args": {}, "use_cookies": False}
         ]
     else:
@@ -255,8 +256,13 @@ def extract_video_info_resilient(url):
             "no_warnings": True,
             "skip_download": True,
             "socket_timeout": 25,
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "cachedir": False,
+            "source_address": "0.0.0.0",
         }
+        # Only inject desktop user agent for non-YouTube platforms (IG, FB, etc.)
+        if not is_yt:
+            ydl_opts["user_agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
         if strat.get("extractor_args"):
             ydl_opts["extractor_args"] = strat["extractor_args"]
         if strat.get("use_cookies") and has_cookies:
@@ -270,6 +276,31 @@ def extract_video_info_resilient(url):
         except Exception as e:
             last_err = e
             continue
+
+    # Secondary fallback engine for YouTube: pytubefix
+    if is_yt:
+        try:
+            from pytubefix import YouTube
+            yt = YouTube(url, client="ANDROID")
+            formats = []
+            for s in yt.streams:
+                h = 0
+                if s.resolution:
+                    try:
+                        h = int(s.resolution.replace("p", ""))
+                    except Exception:
+                        pass
+                formats.append({"height": h, "ext": s.subtype or "mp4"})
+
+            return {
+                "title": yt.title or "YouTube Video",
+                "uploader": yt.author or "YouTube",
+                "duration": yt.length or 0,
+                "thumbnail": yt.thumbnail_url or "",
+                "formats": formats
+            }
+        except Exception as pe:
+            print(f"[Warning] pytubefix metadata fallback error: {pe}")
 
     raise last_err or Exception("Could not fetch video information.")
 
@@ -410,14 +441,31 @@ def run_download_task(task_id, url, quality, title_hint):
                 speed="Processing / Merging..."
             )
 
+    is_yt = "youtube.com" in url.lower() or "youtu.be" in url.lower()
+    cookie_path = os.path.join(BASE_DIR, "cookies.txt")
+    has_cookies = os.path.isfile(cookie_path) and os.path.getsize(cookie_path) > 10
+
+    env_cookies = os.environ.get("YOUTUBE_COOKIES")
+    if env_cookies and not has_cookies:
+        try:
+            with open(cookie_path, "w", encoding="utf-8") as cf:
+                cf.write(env_cookies)
+            has_cookies = True
+        except Exception:
+            pass
+
     ydl_opts = {
         "outtmpl": output_template,
         "progress_hooks": [progress_hook],
         "quiet": True,
         "no_warnings": True,
         "socket_timeout": 60,
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "cachedir": False,
+        "source_address": "0.0.0.0",
     }
+
+    if not is_yt:
+        ydl_opts["user_agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
     if FFMPEG_PATH:
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
@@ -442,25 +490,12 @@ def run_download_task(task_id, url, quality, title_hint):
         ydl_opts["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
         ydl_opts["merge_output_format"] = "mp4"
 
-    is_yt = "youtube.com" in url.lower() or "youtu.be" in url.lower()
-    cookie_path = os.path.join(BASE_DIR, "cookies.txt")
-    has_cookies = os.path.isfile(cookie_path) and os.path.getsize(cookie_path) > 10
-
-    env_cookies = os.environ.get("YOUTUBE_COOKIES")
-    if env_cookies and not has_cookies:
-        try:
-            with open(cookie_path, "w", encoding="utf-8") as cf:
-                cf.write(env_cookies)
-            has_cookies = True
-        except Exception:
-            pass
-
     if is_yt:
         yt_strategies = [
             {"extractor_args": {"youtube": {"player_client": ["android"], "player_skip": ["webpage"]}}, "use_cookies": False},
             {"extractor_args": {"youtube": {"player_client": ["android", "ios"], "player_skip": ["webpage"]}}, "use_cookies": False},
-            {"extractor_args": {}, "use_cookies": has_cookies},
             {"extractor_args": {"youtube": {"player_client": ["mweb", "android"]}}, "use_cookies": False},
+            {"extractor_args": {}, "use_cookies": has_cookies},
             {"extractor_args": {}, "use_cookies": False}
         ]
     else:
@@ -484,6 +519,56 @@ def run_download_task(task_id, url, quality, title_hint):
         except Exception as e:
             last_download_err = e
             continue
+
+    # Secondary fallback engine: pytubefix
+    if is_yt and not download_success:
+        try:
+            update_task_state(task_id, percent=15, speed="Retrying via Mobile Stream Engine...", status="downloading")
+            from pytubefix import YouTube
+
+            def on_progress(stream, chunk, bytes_remaining):
+                total_size = stream.filesize or 1
+                bytes_downloaded = total_size - bytes_remaining
+                pct = round((bytes_downloaded / total_size) * 100, 1) if total_size else 50
+                update_task_state(task_id, percent=pct, speed="Downloading...", eta="--", status="downloading")
+
+            yt = YouTube(url, client="ANDROID", on_progress_callback=on_progress)
+            if quality == "mp3":
+                stream = yt.streams.filter(only_audio=True).first() or yt.streams.get_audio_only()
+                raw_filename = f"{task_id}_{sanitized_title}_raw"
+                if stream:
+                    saved_path = stream.download(output_path=DOWNLOADS_DIR, filename=raw_filename)
+                    mp3_path = os.path.join(DOWNLOADS_DIR, f"{task_id}_{sanitized_title}.mp3")
+                    if FFMPEG_PATH and os.path.exists(saved_path):
+                        try:
+                            cmd = [FFMPEG_PATH, "-y", "-i", saved_path, "-vn", "-ab", "192k", "-ar", "44100", "-f", "mp3", mp3_path]
+                            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+                            try:
+                                os.remove(saved_path)
+                            except Exception:
+                                pass
+                            download_success = True
+                        except Exception:
+                            os.replace(saved_path, mp3_path)
+                            download_success = True
+                    else:
+                        os.replace(saved_path, mp3_path)
+                        download_success = True
+            else:
+                stream = None
+                if quality in ["1080", "720"]:
+                    stream = yt.streams.filter(progressive=True, file_extension="mp4", res=f"{quality}p").first()
+                if not stream:
+                    stream = yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").desc().first()
+                if not stream:
+                    stream = yt.streams.get_highest_resolution()
+
+                if stream:
+                    out_filename = f"{task_id}_{sanitized_title}.mp4"
+                    stream.download(output_path=DOWNLOADS_DIR, filename=out_filename)
+                    download_success = True
+        except Exception as pe:
+            last_download_err = pe
 
     try:
         if not download_success:
