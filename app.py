@@ -214,6 +214,10 @@ def serve_robots():
 def serve_sitemap():
     return send_file(os.path.join(BASE_DIR, "sitemap.xml"), mimetype="application/xml")
 
+@app.route("/google84aae8bf3db6dc70.html")
+def serve_google_verification():
+    return send_file(os.path.join(BASE_DIR, "google84aae8bf3db6dc70.html"), mimetype="text/html")
+
 @app.route("/api/info", methods=["POST"])
 def get_video_info():
     """Fetch video metadata securely with robust fallback clients."""
