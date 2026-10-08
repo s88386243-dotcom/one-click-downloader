@@ -1,5 +1,4 @@
 Flask>=3.0.0
 yt-dlp[default]
-pytubefix>=11.2.0
 imageio-ffmpeg>=0.5.0
 gunicorn>=21.2.0

@@ -240,9 +240,10 @@ def extract_video_info_resilient(url):
 
     if is_yt:
         strategies = [
+            {"extractor_args": {"youtube": {"player_client": ["android"]}}, "use_cookies": False},
             {"extractor_args": {"youtube": {"player_client": ["android"], "player_skip": ["webpage"]}}, "use_cookies": False},
-            {"extractor_args": {"youtube": {"player_client": ["android", "ios"], "player_skip": ["webpage"]}}, "use_cookies": False},
-            {"extractor_args": {"youtube": {"player_client": ["mweb", "android"]}}, "use_cookies": False},
+            {"extractor_args": {"youtube": {"player_client": ["mweb"]}}, "use_cookies": False},
+            {"extractor_args": {"youtube": {"player_client": ["ios"]}}, "use_cookies": False},
             {"extractor_args": {}, "use_cookies": has_cookies},
             {"extractor_args": {}, "use_cookies": False}
         ]
@@ -258,6 +259,7 @@ def extract_video_info_resilient(url):
             "socket_timeout": 25,
             "cachedir": False,
             "source_address": "0.0.0.0",
+            "js_runtimes": {"deno": {}, "node": {}},
         }
         # Only inject desktop user agent for non-YouTube platforms (IG, FB, etc.)
         if not is_yt:
@@ -276,31 +278,6 @@ def extract_video_info_resilient(url):
         except Exception as e:
             last_err = e
             continue
-
-    # Secondary fallback engine for YouTube: pytubefix
-    if is_yt:
-        try:
-            from pytubefix import YouTube
-            yt = YouTube(url, client="ANDROID")
-            formats = []
-            for s in yt.streams:
-                h = 0
-                if s.resolution:
-                    try:
-                        h = int(s.resolution.replace("p", ""))
-                    except Exception:
-                        pass
-                formats.append({"height": h, "ext": s.subtype or "mp4"})
-
-            return {
-                "title": yt.title or "YouTube Video",
-                "uploader": yt.author or "YouTube",
-                "duration": yt.length or 0,
-                "thumbnail": yt.thumbnail_url or "",
-                "formats": formats
-            }
-        except Exception as pe:
-            print(f"[Warning] pytubefix metadata fallback error: {pe}")
 
     raise last_err or Exception("Could not fetch video information.")
 
@@ -462,6 +439,7 @@ def run_download_task(task_id, url, quality, title_hint):
         "socket_timeout": 60,
         "cachedir": False,
         "source_address": "0.0.0.0",
+        "js_runtimes": {"deno": {}, "node": {}},
     }
 
     if not is_yt:
@@ -471,30 +449,31 @@ def run_download_task(task_id, url, quality, title_hint):
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
 
     if quality == "mp3":
-        ydl_opts["format"] = "bestaudio/best"
+        ydl_opts["format"] = "ba/b"
         ydl_opts["postprocessors"] = [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
             "preferredquality": "192",
         }]
     elif quality == "1080":
-        ydl_opts["format"] = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
+        ydl_opts["format"] = "bv*[height<=1080]+ba/b[height<=1080]/b"
         ydl_opts["merge_output_format"] = "mp4"
     elif quality == "720":
-        ydl_opts["format"] = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+        ydl_opts["format"] = "bv*[height<=720]+ba/b[height<=720]/b"
         ydl_opts["merge_output_format"] = "mp4"
     elif quality == "480":
-        ydl_opts["format"] = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]/best"
+        ydl_opts["format"] = "bv*[height<=480]+ba/b[height<=480]/b"
         ydl_opts["merge_output_format"] = "mp4"
     else:  # best
-        ydl_opts["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
+        ydl_opts["format"] = "bv*+ba/b"
         ydl_opts["merge_output_format"] = "mp4"
 
     if is_yt:
         yt_strategies = [
+            {"extractor_args": {"youtube": {"player_client": ["android"]}}, "use_cookies": False},
             {"extractor_args": {"youtube": {"player_client": ["android"], "player_skip": ["webpage"]}}, "use_cookies": False},
-            {"extractor_args": {"youtube": {"player_client": ["android", "ios"], "player_skip": ["webpage"]}}, "use_cookies": False},
-            {"extractor_args": {"youtube": {"player_client": ["mweb", "android"]}}, "use_cookies": False},
+            {"extractor_args": {"youtube": {"player_client": ["mweb"]}}, "use_cookies": False},
+            {"extractor_args": {"youtube": {"player_client": ["ios"]}}, "use_cookies": False},
             {"extractor_args": {}, "use_cookies": has_cookies},
             {"extractor_args": {}, "use_cookies": False}
         ]
@@ -519,56 +498,6 @@ def run_download_task(task_id, url, quality, title_hint):
         except Exception as e:
             last_download_err = e
             continue
-
-    # Secondary fallback engine: pytubefix
-    if is_yt and not download_success:
-        try:
-            update_task_state(task_id, percent=15, speed="Retrying via Mobile Stream Engine...", status="downloading")
-            from pytubefix import YouTube
-
-            def on_progress(stream, chunk, bytes_remaining):
-                total_size = stream.filesize or 1
-                bytes_downloaded = total_size - bytes_remaining
-                pct = round((bytes_downloaded / total_size) * 100, 1) if total_size else 50
-                update_task_state(task_id, percent=pct, speed="Downloading...", eta="--", status="downloading")
-
-            yt = YouTube(url, client="ANDROID", on_progress_callback=on_progress)
-            if quality == "mp3":
-                stream = yt.streams.filter(only_audio=True).first() or yt.streams.get_audio_only()
-                raw_filename = f"{task_id}_{sanitized_title}_raw"
-                if stream:
-                    saved_path = stream.download(output_path=DOWNLOADS_DIR, filename=raw_filename)
-                    mp3_path = os.path.join(DOWNLOADS_DIR, f"{task_id}_{sanitized_title}.mp3")
-                    if FFMPEG_PATH and os.path.exists(saved_path):
-                        try:
-                            cmd = [FFMPEG_PATH, "-y", "-i", saved_path, "-vn", "-ab", "192k", "-ar", "44100", "-f", "mp3", mp3_path]
-                            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-                            try:
-                                os.remove(saved_path)
-                            except Exception:
-                                pass
-                            download_success = True
-                        except Exception:
-                            os.replace(saved_path, mp3_path)
-                            download_success = True
-                    else:
-                        os.replace(saved_path, mp3_path)
-                        download_success = True
-            else:
-                stream = None
-                if quality in ["1080", "720"]:
-                    stream = yt.streams.filter(progressive=True, file_extension="mp4", res=f"{quality}p").first()
-                if not stream:
-                    stream = yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").desc().first()
-                if not stream:
-                    stream = yt.streams.get_highest_resolution()
-
-                if stream:
-                    out_filename = f"{task_id}_{sanitized_title}.mp4"
-                    stream.download(output_path=DOWNLOADS_DIR, filename=out_filename)
-                    download_success = True
-        except Exception as pe:
-            last_download_err = pe
 
     try:
         if not download_success:
