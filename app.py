@@ -595,13 +595,13 @@ def add_security_headers(response):
 
     csp_policy = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://*.monetag.com https://*.alwingulla.com https://*.3nbf4.com https://3nbf4.com https://*.quge5.com https://quge5.com; "
-        "worker-src 'self' blob: https: https://*.3nbf4.com https://*.quge5.com; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://*.monetag.com https://*.alwingulla.com https://*.3nbf4.com https://3nbf4.com https://*.quge5.com https://quge5.com https://*.nap5k.com https://nap5k.com; "
+        "worker-src 'self' blob: https: https://*.3nbf4.com https://*.quge5.com https://*.nap5k.com; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; "
         "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; "
         "img-src 'self' data: https:; "
-        "connect-src 'self' https: https://*.3nbf4.com https://*.monetag.com https://*.quge5.com; "
-        "frame-src 'self' https: https://*.quge5.com; "
+        "connect-src 'self' https: https://*.3nbf4.com https://*.monetag.com https://*.quge5.com https://*.nap5k.com; "
+        "frame-src 'self' https: https://*.quge5.com https://*.nap5k.com; "
         "object-src 'none'; "
         "base-uri 'self';"
     )
