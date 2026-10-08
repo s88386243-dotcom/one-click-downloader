@@ -238,82 +238,131 @@ def get_video_info():
     if not is_safe:
         return jsonify({"success": False, "error": err_reason or "Invalid URL entered."}), 400
 
+def extract_video_info_resilient(url):
+    """
+    Extract video info with resilient fallback strategies.
+    YouTube's web client blocks cloud IPs and requires JS challenges.
+    We prioritize 'ios' and 'android' mobile clients which are immune to web challenge blocks.
+    """
+    is_yt = "youtube.com" in url.lower() or "youtu.be" in url.lower()
+    if is_yt:
+        strategies = [
+            {"player_client": ["ios", "android"]},
+            {"player_client": ["android"]},
+            {"player_client": ["ios"]},
+            {}
+        ]
+    else:
+        strategies = [{}]
+
+    last_err = None
+    for strat in strategies:
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "socket_timeout": 25,
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        }
+        if strat:
+            ydl_opts["extractor_args"] = {"youtube": strat}
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if info:
+                    return info
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise last_err or Exception("Could not fetch video information.")
+
+@app.route("/api/info", methods=["POST"])
+def get_video_info():
+    """Fetch video metadata securely with robust fallback clients."""
+    data = request.get_json(force=True, silent=True) or {}
+    url = (data.get("url") or "").strip()
+
+    if not url:
+        return jsonify({"success": False, "error": "Kripya video URL enter karein (Please provide a URL)"}), 400
+
+    if len(url) > 2048:
+        return jsonify({"success": False, "error": "URL bahut lamba hai (URL length exceeded limit)"}), 400
+
+    if not (url.startswith("http://") or url.startswith("https://")):
+        url = "https://" + url
+
+    # SSRF Protection
+    is_safe, err_reason = is_safe_url(url)
+    if not is_safe:
+        return jsonify({"success": False, "error": err_reason or "Invalid URL entered."}), 400
+
     platform = detect_platform(url)
 
-    # Resilient options: Android and iOS player clients bypass web player signature changes
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "socket_timeout": 20,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "web", "ios"]
-            }
-        },
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    }
-
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            
-            if not info:
-                return jsonify({"success": False, "error": "Video details fetch nahi ho paye. Kripya URL check karein."}), 400
+        info = extract_video_info_resilient(url)
+        
+        if not info:
+            return jsonify({"success": False, "error": "Video details fetch nahi ho paye. Kripya URL check karein."}), 400
 
-            title = info.get("title") or "Video"
-            uploader = info.get("uploader") or info.get("channel") or info.get("creator") or platform.capitalize()
-            duration_secs = info.get("duration")
-            duration_str = format_duration(duration_secs)
-            thumbnail = info.get("thumbnail") or ""
-            
-            # Parse available video qualities
-            formats = info.get("formats") or []
-            heights = set()
-            for f in formats:
-                h = f.get("height")
-                if h and isinstance(h, int):
-                    heights.add(h)
+        title = info.get("title") or "Video"
+        uploader = info.get("uploader") or info.get("channel") or info.get("creator") or platform.capitalize()
+        duration_secs = info.get("duration")
+        duration_str = format_duration(duration_secs)
+        thumbnail = info.get("thumbnail") or ""
+        
+        # Parse available video qualities
+        formats = info.get("formats") or []
+        heights = set()
+        for f in formats:
+            h = f.get("height")
+            if h and isinstance(h, int):
+                heights.add(h)
 
-            quality_options = []
-            
-            # 1080p Full HD
-            if any(h >= 1080 for h in heights) or platform in ["instagram", "facebook"]:
-                quality_options.append({"id": "1080", "label": "Full HD (1080p)", "ext": "mp4", "badge": "1080p MP4", "desc": "Best Quality"})
-            
-            # 720p HD
-            if any(h >= 720 for h in heights) or platform in ["instagram", "facebook"]:
-                quality_options.append({"id": "720", "label": "HD (720p)", "ext": "mp4", "badge": "720p MP4", "desc": "Standard HD"})
+        quality_options = []
+        
+        # 1080p Full HD
+        if any(h >= 1080 for h in heights) or platform in ["instagram", "facebook"]:
+            quality_options.append({"id": "1080", "label": "Full HD (1080p)", "ext": "mp4", "badge": "1080p MP4", "desc": "Best Quality"})
+        
+        # 720p HD
+        if any(h >= 720 for h in heights) or platform in ["instagram", "facebook"]:
+            quality_options.append({"id": "720", "label": "HD (720p)", "ext": "mp4", "badge": "720p MP4", "desc": "Standard HD"})
 
-            # 480p / 360p SD
-            quality_options.append({"id": "480", "label": "SD (480p)", "ext": "mp4", "badge": "480p MP4", "desc": "Fast & Light"})
-            
-            # Always offer Best Available as default first option
-            quality_options.insert(0, {"id": "best", "label": "Maximum Quality (Best)", "ext": "mp4", "badge": "Best MP4", "desc": "Auto Highest Res"})
+        # 480p / 360p SD
+        quality_options.append({"id": "480", "label": "SD (480p)", "ext": "mp4", "badge": "480p MP4", "desc": "Fast & Light"})
+        
+        # Always offer Best Available as default first option
+        quality_options.insert(0, {"id": "best", "label": "Maximum Quality (Best)", "ext": "mp4", "badge": "Best MP4", "desc": "Auto Highest Res"})
 
-            # MP3 Audio option
-            quality_options.append({"id": "mp3", "label": "Audio Only (MP3)", "ext": "mp3", "badge": "MP3 Audio", "desc": "High Quality 192k"})
+        # MP3 Audio option
+        quality_options.append({"id": "mp3", "label": "Audio Only (MP3)", "ext": "mp3", "badge": "MP3 Audio", "desc": "High Quality 192k"})
 
-            return jsonify({
-                "success": True,
-                "data": {
-                    "url": url,
-                    "title": title,
-                    "uploader": uploader,
-                    "duration": duration_str,
-                    "thumbnail": thumbnail,
-                    "platform": platform,
-                    "qualities": quality_options
-                }
-            })
+        return jsonify({
+            "success": True,
+            "data": {
+                "url": url,
+                "title": title,
+                "uploader": uploader,
+                "duration": duration_str,
+                "thumbnail": thumbnail,
+                "platform": platform,
+                "qualities": quality_options
+            }
+        })
     except Exception as e:
         err_msg = str(e)
         if "Private video" in err_msg or "login" in err_msg.lower():
             err_text = "Yeh video private hai ya isme login ki zaroorat hai."
+        elif "This video is unavailable" in err_msg:
+            err_text = "Yeh video YouTube par available nahi hai ya remove ho chuka hai."
         elif "Unsupported URL" in err_msg:
             err_text = "Unsupported URL. Kripya valid YouTube, Instagram ya Facebook link dalein."
         else:
-            err_text = "Video fetch karne me error aaya. Kripya link verify karein."
+            first_line = err_msg.strip().splitlines()[-1] if err_msg else ""
+            clean_hint = re.sub(r'ERROR:\s*\[.*?\]\s*', '', first_line).strip()
+            err_text = f"Fetch error: {clean_hint[:90]}" if clean_hint else "Video fetch karne me error aaya. Kripya link verify karein."
         return jsonify({"success": False, "error": err_text}), 400
 
 def run_download_task(task_id, url, quality, title_hint):
@@ -374,7 +423,7 @@ def run_download_task(task_id, url, quality, title_hint):
         "socket_timeout": 60,
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "web", "ios"]
+                "player_client": ["ios", "android"]
             }
         },
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
