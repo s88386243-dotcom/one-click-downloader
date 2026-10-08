@@ -218,26 +218,6 @@ def serve_sitemap():
 def serve_google_verification():
     return send_file(os.path.join(BASE_DIR, "google84aae8bf3db6dc70.html"), mimetype="text/html")
 
-@app.route("/api/info", methods=["POST"])
-def get_video_info():
-    """Fetch video metadata securely with robust fallback clients."""
-    data = request.get_json(force=True, silent=True) or {}
-    url = (data.get("url") or "").strip()
-
-    if not url:
-        return jsonify({"success": False, "error": "Kripya video URL enter karein (Please provide a URL)"}), 400
-
-    if len(url) > 2048:
-        return jsonify({"success": False, "error": "URL bahut lamba hai (URL length exceeded limit)"}), 400
-
-    if not (url.startswith("http://") or url.startswith("https://")):
-        url = "https://" + url
-
-    # SSRF Protection
-    is_safe, err_reason = is_safe_url(url)
-    if not is_safe:
-        return jsonify({"success": False, "error": err_reason or "Invalid URL entered."}), 400
-
 def extract_video_info_resilient(url):
     """
     Extract video info with resilient fallback strategies.
