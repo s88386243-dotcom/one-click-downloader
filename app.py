@@ -238,24 +238,15 @@ def extract_video_info_resilient(url):
             pass
 
     if is_yt:
-        if has_cookies:
-            strategies = [
-                {},
-                {"player_client": ["web"]},
-                {"player_client": ["mweb"]},
-                {"player_client": ["tv"]},
-                {"player_client": ["android"], "player_skip": ["webpage"]},
-            ]
-        else:
-            strategies = [
-                {"player_client": ["android"], "player_skip": ["webpage"]},
-                {"player_client": ["android", "ios"], "player_skip": ["webpage"]},
-                {"player_client": ["mweb", "android"]},
-                {"player_client": ["default", "-android_sdkless"]},
-                {}
-            ]
+        strategies = [
+            {"extractor_args": {"youtube": {"player_client": ["android"], "player_skip": ["webpage"]}}, "use_cookies": False},
+            {"extractor_args": {"youtube": {"player_client": ["android", "ios"], "player_skip": ["webpage"]}}, "use_cookies": False},
+            {"extractor_args": {}, "use_cookies": has_cookies},
+            {"extractor_args": {"youtube": {"player_client": ["mweb", "android"]}}, "use_cookies": False},
+            {"extractor_args": {}, "use_cookies": False}
+        ]
     else:
-        strategies = [{}]
+        strategies = [{"extractor_args": {}, "use_cookies": False}]
 
     last_err = None
     for strat in strategies:
@@ -266,9 +257,9 @@ def extract_video_info_resilient(url):
             "socket_timeout": 25,
             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         }
-        if strat:
-            ydl_opts["extractor_args"] = {"youtube": strat}
-        if has_cookies:
+        if strat.get("extractor_args"):
+            ydl_opts["extractor_args"] = strat["extractor_args"]
+        if strat.get("use_cookies") and has_cookies:
             ydl_opts["cookiefile"] = cookie_path
 
         try:
@@ -465,33 +456,24 @@ def run_download_task(task_id, url, quality, title_hint):
             pass
 
     if is_yt:
-        if has_cookies:
-            yt_strategies = [
-                {},
-                {"player_client": ["web"]},
-                {"player_client": ["mweb"]},
-                {"player_client": ["tv"]},
-                {"player_client": ["android"], "player_skip": ["webpage"]},
-            ]
-        else:
-            yt_strategies = [
-                {"player_client": ["android"], "player_skip": ["webpage"]},
-                {"player_client": ["android", "ios"], "player_skip": ["webpage"]},
-                {"player_client": ["mweb", "android"]},
-                {"player_client": ["default", "-android_sdkless"]},
-                {}
-            ]
+        yt_strategies = [
+            {"extractor_args": {"youtube": {"player_client": ["android"], "player_skip": ["webpage"]}}, "use_cookies": False},
+            {"extractor_args": {"youtube": {"player_client": ["android", "ios"], "player_skip": ["webpage"]}}, "use_cookies": False},
+            {"extractor_args": {}, "use_cookies": has_cookies},
+            {"extractor_args": {"youtube": {"player_client": ["mweb", "android"]}}, "use_cookies": False},
+            {"extractor_args": {}, "use_cookies": False}
+        ]
     else:
-        yt_strategies = [{}]
+        yt_strategies = [{"extractor_args": {}, "use_cookies": False}]
 
     download_success = False
     last_download_err = None
 
     for strat in yt_strategies:
         current_opts = dict(ydl_opts)
-        if strat:
-            current_opts["extractor_args"] = {"youtube": strat}
-        if has_cookies:
+        if strat.get("extractor_args"):
+            current_opts["extractor_args"] = strat["extractor_args"]
+        if strat.get("use_cookies") and has_cookies:
             current_opts["cookiefile"] = cookie_path
 
         try:
