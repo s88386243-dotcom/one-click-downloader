@@ -4,7 +4,10 @@ import sys
 import time
 import uuid
 import shutil
+import socket
+import ipaddress
 import threading
+from urllib.parse import urlparse
 from datetime import datetime
 
 # Ensure utf-8 encoding on Windows console
@@ -14,7 +17,8 @@ if sys.platform == "win32":
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
-from flask import Flask, render_template, request, jsonify, send_file, Response, abort
+
+from flask import Flask, render_template, request, jsonify, send_file, abort
 
 # Configure FFmpeg: prioritize system ffmpeg (Linux/Docker) then fallback to imageio_ffmpeg
 FFMPEG_PATH = shutil.which("ffmpeg")
@@ -44,12 +48,11 @@ DOWNLOADS_DIR = os.path.join(BASE_DIR, "downloads")
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
 # In-memory download tasks tracking
-# { task_id: { "status": "pending|downloading|processing|completed|error", "percent": 0, "speed": "", "eta": "", "filename": "", "filepath": "", "error": "" } }
 tasks = {}
 
 def sanitize_filename(name):
     """Sanitize string for safe filenames across platforms."""
-    name = re.sub(r'[\\/*?:"<>|]', "", name)
+    name = re.sub(r'[\\/*?:"<>|]', "", name or "")
     name = re.sub(r'[\s_]+', " ", name).strip()
     return name[:80] if name else "video"
 
@@ -64,6 +67,45 @@ def format_duration(seconds):
     if hours > 0:
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
+
+def is_safe_url(url_string):
+    """
+    Validate URL to protect against SSRF (Server-Side Request Forgery)
+    and internal network probing.
+    """
+    try:
+        parsed = urlparse(url_string)
+        if parsed.scheme not in ("http", "https"):
+            return False, "Invalid URL scheme. Sirf http aur https allowed hain."
+
+        hostname = parsed.hostname
+        if not hostname:
+            return False, "Invalid hostname in URL."
+
+        hostname_lower = hostname.lower()
+
+        # Block localhost and local loopback domains
+        if hostname_lower in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "local"):
+            return False, "Localhost addresses are not allowed."
+
+        # Resolve hostname to check for private / internal IP ranges
+        try:
+            ip = socket.gethostbyname(hostname)
+            ip_obj = ipaddress.ip_address(ip)
+            if (
+                ip_obj.is_private
+                or ip_obj.is_loopback
+                or ip_obj.is_link_local
+                or ip_obj.is_reserved
+                or ip_obj.is_multicast
+            ):
+                return False, "Private or internal network URLs are blocked for security."
+        except socket.gaierror:
+            return False, "Host address could not be resolved."
+
+        return True, None
+    except Exception as e:
+        return False, f"URL validation error: {str(e)}"
 
 def detect_platform(url):
     """Detect source platform from URL."""
@@ -108,15 +150,23 @@ def index():
 
 @app.route("/api/info", methods=["POST"])
 def get_video_info():
-    """Fetch video metadata without downloading."""
+    """Fetch video metadata securely without downloading."""
     data = request.get_json(force=True, silent=True) or {}
     url = (data.get("url") or "").strip()
 
     if not url:
         return jsonify({"success": False, "error": "Kripya video URL enter karein (Please provide a URL)"}), 400
 
+    if len(url) > 2048:
+        return jsonify({"success": False, "error": "URL bahut lamba hai (URL length exceeded limit)"}), 400
+
     if not (url.startswith("http://") or url.startswith("https://")):
         url = "https://" + url
+
+    # SSRF Protection
+    is_safe, err_reason = is_safe_url(url)
+    if not is_safe:
+        return jsonify({"success": False, "error": err_reason or "Invalid URL entered."}), 400
 
     platform = detect_platform(url)
 
@@ -144,13 +194,10 @@ def get_video_info():
             # Parse available video qualities
             formats = info.get("formats") or []
             heights = set()
-            has_audio = False
             for f in formats:
                 h = f.get("height")
                 if h and isinstance(h, int):
                     heights.add(h)
-                if f.get("acodec") != "none" or f.get("vcodec") == "none":
-                    has_audio = True
 
             quality_options = []
             
@@ -190,11 +237,11 @@ def get_video_info():
         elif "Unsupported URL" in err_msg:
             err_text = "Unsupported URL. Kripya valid YouTube, Instagram ya Facebook link dalein."
         else:
-            err_text = f"Video fetch karne me error: {err_msg[:120]}"
+            err_text = "Video fetch karne me error aaya. Kripya link verify karein."
         return jsonify({"success": False, "error": err_text}), 400
 
 def run_download_task(task_id, url, quality, title_hint):
-    """Execute download in background thread and update progress."""
+    """Execute download in background thread securely and update progress."""
     tasks[task_id] = {
         "status": "downloading",
         "percent": 0,
@@ -272,7 +319,7 @@ def run_download_task(task_id, url, quality, title_hint):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
-        # Find the final generated file for this task
+        # Locate generated file
         target_file = None
         for f in os.listdir(DOWNLOADS_DIR):
             if f.startswith(task_id):
@@ -292,11 +339,11 @@ def run_download_task(task_id, url, quality, title_hint):
             tasks[task_id]["error"] = "Downloaded file could not be located."
     except Exception as e:
         tasks[task_id]["status"] = "error"
-        tasks[task_id]["error"] = f"Download failed: {str(e)[:150]}"
+        tasks[task_id]["error"] = "Download failed. Kripya dobara try karein."
 
 @app.route("/api/download/start", methods=["POST"])
 def start_download():
-    """Start asynchronous download task."""
+    """Start asynchronous download task with strict validation."""
     data = request.get_json(force=True, silent=True) or {}
     url = (data.get("url") or "").strip()
     quality = (data.get("quality") or "best").strip().lower()
@@ -305,9 +352,21 @@ def start_download():
     if not url:
         return jsonify({"success": False, "error": "URL missing"}), 400
 
+    if len(url) > 2048:
+        return jsonify({"success": False, "error": "URL length exceeded limit"}), 400
+
+    # Whitelist quality parameter to prevent parameter pollution
+    allowed_qualities = {"best", "1080", "720", "480", "360", "mp3"}
+    if quality not in allowed_qualities:
+        quality = "best"
+
+    # SSRF Protection
+    is_safe, err_reason = is_safe_url(url)
+    if not is_safe:
+        return jsonify({"success": False, "error": err_reason or "Invalid URL entered."}), 400
+
     task_id = uuid.uuid4().hex[:12]
 
-    # Spawn thread to download
     thread = threading.Thread(
         target=run_download_task,
         args=(task_id, url, quality, title),
@@ -319,10 +378,14 @@ def start_download():
 
 @app.route("/api/download/status/<task_id>", methods=["GET"])
 def check_status(task_id):
-    """Check progress of a download task."""
+    """Check progress of a download task with sanitized task_id."""
+    if not re.match(r"^[a-fA-F0-9]{8,32}$", task_id):
+        return jsonify({"status": "error", "error": "Invalid task ID format"}), 400
+
     task = tasks.get(task_id)
     if not task:
         return jsonify({"status": "not_found", "error": "Task not found"}), 404
+
     return jsonify({
         "status": task["status"],
         "percent": task.get("percent", 0),
@@ -334,7 +397,10 @@ def check_status(task_id):
 
 @app.route("/api/download/file/<task_id>", methods=["GET"])
 def download_file(task_id):
-    """Send completed file to client."""
+    """Send completed file to client with strict path-traversal prevention."""
+    if not re.match(r"^[a-fA-F0-9]{8,32}$", task_id):
+        abort(400, description="Invalid task ID format")
+
     task = tasks.get(task_id)
     if not task or task.get("status") != "completed":
         abort(404, description="File not ready or expired")
@@ -342,6 +408,12 @@ def download_file(task_id):
     filepath = task.get("filepath")
     if not filepath or not os.path.exists(filepath):
         abort(404, description="File not found on server")
+
+    # Path traversal validation: ensure target file is strictly inside DOWNLOADS_DIR
+    real_downloads_dir = os.path.realpath(DOWNLOADS_DIR)
+    real_filepath = os.path.realpath(filepath)
+    if not real_filepath.startswith(real_downloads_dir + os.sep):
+        abort(403, description="Access forbidden: Path outside downloads directory")
 
     filename = task.get("filename") or os.path.basename(filepath)
     return send_file(
@@ -352,10 +424,49 @@ def download_file(task_id):
     )
 
 @app.after_request
-def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
-    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+def add_security_headers(response):
+    """
+    Comprehensive Security Hardening:
+    - Protects against Clickjacking (X-Frame-Options: SAMEORIGIN)
+    - Prevents MIME-type sniffing (X-Content-Type-Options: nosniff)
+    - Enforces modern HTTPS (Strict-Transport-Security)
+    - Mitigates XSS & Code Injection (Content-Security-Policy)
+    - Restricts Referrer leaking (Referrer-Policy)
+    - Disallows risky browser APIs (Permissions-Policy)
+    - Restricts CORS: No open wildcard '*' so other sites cannot read user responses
+    """
+    # 1. Prevent MIME-type sniffing
+    response.headers["X-Content-Type-Options"] = "nosniff"
+
+    # 2. Prevent Clickjacking
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+
+    # 3. Enforce Strict HTTPS
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
+
+    # 4. Referrer Policy
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+    # 5. Restrict permissions
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+
+    # 6. Content Security Policy (allows self, FontAwesome CDN, Google Fonts, and Monetag ad domains)
+    csp_policy = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://*.monetag.com https://*.alwingulla.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; "
+        "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self' https:; "
+        "frame-src 'self' https:; "
+        "object-src 'none'; "
+        "base-uri 'self';"
+    )
+    response.headers["Content-Security-Policy"] = csp_policy
+
+    # Note: Removed 'Access-Control-Allow-Origin: *' to fix Antideploy Medium vulnerability.
+    # Same-origin requests work natively without CORS, blocking malicious external sites.
+
     return response
 
 if __name__ == "__main__":
