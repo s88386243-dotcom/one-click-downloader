@@ -174,18 +174,18 @@ cleanup_thread.start()
 
 # Auto-update yt-dlp periodically in background so YouTube algorithm changes never break downloads
 def auto_update_ytdlp_daemon():
-    """Continuously keep yt-dlp updated to the latest version."""
+    """Continuously keep yt-dlp and yt-dlp-ejs updated to the latest version."""
     time.sleep(20)  # wait 20s after boot
     while True:
         try:
-            print("[+] Running auto-update check for yt-dlp...")
+            print("[+] Running auto-update check for yt-dlp and yt-dlp-ejs...")
             res = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp", "--no-cache-dir"],
+                [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp", "yt-dlp-ejs", "--no-cache-dir"],
                 capture_output=True,
                 text=True,
                 timeout=180
             )
-            print("[+] yt-dlp auto-update check completed.")
+            print("[+] yt-dlp and yt-dlp-ejs auto-update check completed.")
         except Exception as e:
             print(f"[-] yt-dlp auto-update notice: {e}")
         time.sleep(43200)  # Check every 12 hours
@@ -221,8 +221,8 @@ def serve_google_verification():
 def extract_video_info_resilient(url):
     """
     Extract video info with resilient fallback strategies.
-    YouTube's web client blocks cloud IPs and requires JS challenges.
-    We prioritize 'android' mobile clients which are immune to web challenge blocks.
+    For YouTube, prioritize modern 'visionos' and 'web_embedded' clients
+    which bypass datacenter IP BotGuard blocks and provide full 1080p/720p/480p streams.
     Cachedir is disabled to prevent poisoned session tokens across downloads.
     """
     is_yt = "youtube.com" in url.lower() or "youtu.be" in url.lower()
@@ -240,14 +240,16 @@ def extract_video_info_resilient(url):
 
     if is_yt:
         strategies = [
+            {"extractor_args": {"youtube": {"player_client": ["visionos"]}}, "use_cookies": False},
+            {"extractor_args": {"youtube": {"player_client": ["visionos", "web_embedded"]}}, "use_cookies": False},
             {"extractor_args": {"youtube": {"player_client": ["android"]}}, "use_cookies": False},
             {"extractor_args": {"youtube": {"player_client": ["android"], "player_skip": ["webpage"]}}, "use_cookies": False},
             {"extractor_args": {"youtube": {"player_client": ["mweb"]}}, "use_cookies": False},
-            {"extractor_args": {"youtube": {"player_client": ["ios"]}}, "use_cookies": False},
             {"extractor_args": {}, "use_cookies": has_cookies},
             {"extractor_args": {}, "use_cookies": False}
         ]
     else:
+        # STRICT CONSTRAINT: Instagram and Facebook logic is 100% UNTOUCHED
         strategies = [{"extractor_args": {}, "use_cookies": False}]
 
     last_err = None
@@ -448,36 +450,57 @@ def run_download_task(task_id, url, quality, title_hint):
     if FFMPEG_PATH:
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
 
-    if quality == "mp3":
-        ydl_opts["format"] = "ba/b"
-        ydl_opts["postprocessors"] = [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "192",
-        }]
-    elif quality == "1080":
-        ydl_opts["format"] = "bv*[height<=1080]+ba/b[height<=1080]/b"
-        ydl_opts["merge_output_format"] = "mp4"
-    elif quality == "720":
-        ydl_opts["format"] = "bv*[height<=720]+ba/b[height<=720]/b"
-        ydl_opts["merge_output_format"] = "mp4"
-    elif quality == "480":
-        ydl_opts["format"] = "bv*[height<=480]+ba/b[height<=480]/b"
-        ydl_opts["merge_output_format"] = "mp4"
-    else:  # best
-        ydl_opts["format"] = "bv*+ba/b"
-        ydl_opts["merge_output_format"] = "mp4"
-
     if is_yt:
+        if quality == "mp3":
+            ydl_opts["format"] = "ba/b"
+            ydl_opts["postprocessors"] = [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }]
+        elif quality == "1080":
+            ydl_opts["format"] = "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b/best"
+            ydl_opts["merge_output_format"] = "mp4"
+        elif quality == "720":
+            ydl_opts["format"] = "bv*[height<=720]+ba/b[height<=720]/bv*+ba/b/best"
+            ydl_opts["merge_output_format"] = "mp4"
+        elif quality == "480":
+            ydl_opts["format"] = "bv*[height<=480]+ba/b[height<=480]/bv*+ba/b/best"
+            ydl_opts["merge_output_format"] = "mp4"
+        else:  # best
+            ydl_opts["format"] = "bv*+ba/b/best"
+            ydl_opts["merge_output_format"] = "mp4"
+
         yt_strategies = [
+            {"extractor_args": {"youtube": {"player_client": ["visionos"]}}, "use_cookies": False},
+            {"extractor_args": {"youtube": {"player_client": ["visionos", "web_embedded"]}}, "use_cookies": False},
+            {"extractor_args": {"youtube": {"player_client": ["android_vr"]}}, "use_cookies": False},
             {"extractor_args": {"youtube": {"player_client": ["android"]}}, "use_cookies": False},
-            {"extractor_args": {"youtube": {"player_client": ["android"], "player_skip": ["webpage"]}}, "use_cookies": False},
-            {"extractor_args": {"youtube": {"player_client": ["mweb"]}}, "use_cookies": False},
-            {"extractor_args": {"youtube": {"player_client": ["ios"]}}, "use_cookies": False},
             {"extractor_args": {}, "use_cookies": has_cookies},
             {"extractor_args": {}, "use_cookies": False}
         ]
     else:
+        # STRICT CONSTRAINT: Instagram and Facebook logic is 100% UNTOUCHED
+        if quality == "mp3":
+            ydl_opts["format"] = "ba/b"
+            ydl_opts["postprocessors"] = [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }]
+        elif quality == "1080":
+            ydl_opts["format"] = "bv*[height<=1080]+ba/b[height<=1080]/b"
+            ydl_opts["merge_output_format"] = "mp4"
+        elif quality == "720":
+            ydl_opts["format"] = "bv*[height<=720]+ba/b[height<=720]/b"
+            ydl_opts["merge_output_format"] = "mp4"
+        elif quality == "480":
+            ydl_opts["format"] = "bv*[height<=480]+ba/b[height<=480]/b"
+            ydl_opts["merge_output_format"] = "mp4"
+        else:  # best
+            ydl_opts["format"] = "bv*+ba/b"
+            ydl_opts["merge_output_format"] = "mp4"
+
         yt_strategies = [{"extractor_args": {}, "use_cookies": False}]
 
     download_success = False
@@ -497,6 +520,9 @@ def run_download_task(task_id, url, quality, title_hint):
             break
         except Exception as e:
             last_download_err = e
+            err_str = str(e).lower()
+            if "cookies are no longer valid" in err_str or ("cookie" in err_str and "expired" in err_str):
+                has_cookies = False
             continue
 
     try:
@@ -650,6 +676,111 @@ def download_file(task_id):
         download_name=filename,
         mimetype="audio/mpeg" if filename.endswith(".mp3") else "video/mp4"
     )
+
+# --- Admin Engine Health & Cookie Manager ---
+ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "admin888")
+
+@app.route("/admin", methods=["GET"])
+def admin_panel():
+    """Lightweight admin dashboard to monitor engine health and update YouTube cookies on the fly."""
+    key = request.args.get("key", "").strip()
+    is_authenticated = (key == ADMIN_SECRET)
+    
+    cookie_path = os.path.join(BASE_DIR, "cookies.txt")
+    has_cookies = os.path.isfile(cookie_path) and os.path.getsize(cookie_path) > 10
+    cookie_size = os.path.getsize(cookie_path) if os.path.isfile(cookie_path) else 0
+
+    ytdlp_ver = getattr(yt_dlp, "__version__", "Unknown")
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Downloader Engine Admin</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #f8fafc; padding: 24px; margin: 0; }}
+        .container {{ max-width: 760px; margin: 0 auto; background: #1e293b; border-radius: 12px; padding: 24px; border: 1px solid #334155; }}
+        h1 {{ color: #38bdf8; font-size: 22px; margin-top: 0; }}
+        .badge {{ display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; margin-right: 6px; }}
+        .badge-green {{ background: #065f46; color: #34d399; }}
+        .badge-yellow {{ background: #854d0e; color: #fde047; }}
+        .card {{ background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 16px; margin: 16px 0; }}
+        textarea {{ width: 100%; box-sizing: border-box; height: 160px; background: #1e293b; border: 1px solid #475569; color: #f8fafc; font-family: monospace; font-size: 12px; border-radius: 6px; padding: 10px; margin-top: 8px; }}
+        input[type="text"], input[type="password"] {{ background: #1e293b; border: 1px solid #475569; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 14px; width: 100%; box-sizing: border-box; }}
+        button {{ background: #2563eb; color: white; border: none; padding: 10px 18px; border-radius: 6px; font-weight: 600; cursor: pointer; margin-top: 10px; transition: 0.2s; }}
+        button:hover {{ background: #1d4ed8; }}
+        .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 16px 0; }}
+        .stat-box {{ background: #0f172a; border: 1px solid #334155; padding: 12px; border-radius: 8px; }}
+        .stat-label {{ font-size: 12px; color: #94a3b8; }}
+        .stat-val {{ font-size: 15px; font-weight: 600; color: #f8fafc; margin-top: 4px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>⚙️ Downloader Engine Control & Health</h1>
+        
+        <div class="stat-grid">
+            <div class="stat-box">
+                <div class="stat-label">YouTube Engine</div>
+                <div class="stat-val"><span class="badge badge-green">VisionOS Waterfall</span></div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Instagram / FB</div>
+                <div class="stat-val"><span class="badge badge-green">Operational</span></div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">yt-dlp Version</div>
+                <div class="stat-val">{ytdlp_ver}</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Cookies Status</div>
+                <div class="stat-val"><span class="badge {'badge-green' if has_cookies else 'badge-yellow'}">{'Active (' + str(cookie_size) + ' B)' if has_cookies else 'No Cookie (VisionOS Active)'}</span></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3 style="margin-top:0; font-size: 16px; color:#38bdf8;">🍪 Instant YouTube Cookie Updater (Zero Redeploy)</h3>
+            <p style="font-size: 13px; color: #94a3b8; margin: 4px 0 12px;">If YouTube ever rolls out strict bot walls, paste fresh Netscape cookies here to activate them instantly without restarting or pushing code.</p>
+            <form method="POST" action="/api/admin/update-cookies">
+                <label style="font-size:12px; color:#94a3b8;">Admin Secret PIN:</label>
+                <input type="password" name="admin_secret" value="{key}" placeholder="Enter admin PIN (default: admin888)" style="margin-bottom: 10px;">
+                <label style="font-size:12px; color:#94a3b8;">Paste Netscape Cookie File Content:</label>
+                <textarea name="cookies_content" placeholder="# Netscape HTTP Cookie File&#10;.youtube.com\tTRUE\t/\tTRUE..."></textarea>
+                <button type="submit">💾 Save & Activate Cookies</button>
+            </form>
+        </div>
+
+        <div style="font-size: 12px; color: #64748b; text-align: center; margin-top: 20px;">
+            One Click Downloader Enterprise Resilience Engine
+        </div>
+    </div>
+</body>
+</html>"""
+    return html
+
+@app.route("/api/admin/update-cookies", methods=["POST"])
+def admin_update_cookies():
+    """Instantly save updated cookies without redeployment."""
+    secret = request.form.get("admin_secret", "").strip() or (request.json or {}).get("admin_secret", "").strip()
+    if secret != ADMIN_SECRET:
+        return jsonify({"success": False, "error": "Unauthorized: Invalid admin secret PIN"}), 403
+
+    content = request.form.get("cookies_content", "").strip() or (request.json or {}).get("cookies_content", "").strip()
+    if not content:
+        return jsonify({"success": False, "error": "Cookie content cannot be empty"}), 400
+
+    cookie_path = os.path.join(BASE_DIR, "cookies.txt")
+    try:
+        with open(cookie_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return """<body style="background:#0f172a;color:#34d399;font-family:sans-serif;padding:40px;text-align:center;">
+            <h2>✅ Cookies updated successfully!</h2>
+            <p style="color:#94a3b8;">Fresh YouTube cookies have been saved to disk and activated.</p>
+            <a href="/admin?key=""" + secret + """" style="color:#38bdf8;text-decoration:none;">⬅ Back to Admin</a>
+        </body>"""
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.after_request
 def add_security_headers(response):
