@@ -99,6 +99,10 @@
             </div>
 
             <div class="nav-actions">
+                <a href="https://t.me/cybergod_990" target="_blank" rel="noopener" class="btn-ghost" title="Report Issue on Telegram" style="display: inline-flex; align-items: center; gap: 6px; text-decoration: none; color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); padding: 7px 14px; border-radius: 9999px; font-size: 0.85rem; font-weight: 600; background: rgba(56, 189, 248, 0.08);">
+                    <i class="fa-brands fa-telegram" style="font-size: 1.1rem;"></i>
+                    <span>Support / Report</span>
+                </a>
                 <button id="historyToggleBtn" class="btn-ghost" title="Recent Downloads">
                     <i class="fa-solid fa-clock-rotate-left"></i>
                     <span>History</span>
@@ -178,10 +182,18 @@
                     <span id="detectedName">Platform detected</span>
                 </div>
 
-                <!-- Error Alert Box -->
-                <div id="errorAlert" class="alert-box alert-error" style="display: none;">
-                    <i class="fa-solid fa-circle-exclamation"></i>
-                    <span id="errorMessage">Kuch gadbad hui. Kripya dobara try karein.</span>
+                <!-- Error Alert Box with Telegram Report Button -->
+                <div id="errorAlert" class="alert-box alert-error" style="display: none; flex-direction: column; align-items: stretch; gap: 8px;">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <i class="fa-solid fa-circle-exclamation"></i>
+                        <span id="errorMessage">Kuch gadbad hui. Kripya dobara try karein.</span>
+                    </div>
+                    <div style="padding-top: 8px; border-top: 1px solid rgba(239, 68, 68, 0.25); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+                        <span style="font-size: 0.82rem; color: #fca5a5;">Problem solve nahi hui? Admin ko report karein:</span>
+                        <a href="https://t.me/cybergod_990" target="_blank" rel="noopener" style="display: inline-flex; align-items: center; gap: 6px; background: #0088cc; color: #ffffff; text-decoration: none; padding: 5px 12px; border-radius: 6px; font-size: 0.82rem; font-weight: 600;">
+                            <i class="fa-brands fa-telegram"></i> Report on Telegram (@cybergod_990)
+                        </a>
+                    </div>
                 </div>
             </div>
 
@@ -380,6 +392,15 @@
             <div class="footer-logo">
                 <i class="fa-solid fa-bolt-lightning"></i> One Click Downloader
             </div>
+            <p style="margin: 10px 0 6px 0; font-size: 0.95rem; color: #e2e8f0; font-weight: 600;">
+                Developer: <span style="background: linear-gradient(135deg, #38bdf8, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-weight: 700;">Sandesh Kumar Maddheshiya</span>
+            </p>
+            <p style="margin-bottom: 14px; font-size: 0.88rem; color: #94a3b8;">
+                Facing any error or problem? 
+                <a href="https://t.me/cybergod_990" target="_blank" rel="noopener" style="color: #38bdf8; text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; margin-left: 4px;">
+                    <i class="fa-brands fa-telegram"></i> Report to Admin on Telegram (@cybergod_990)
+                </a>
+            </p>
             <p class="footer-disclaimer">
                 One Click Downloader is intended for personal and educational use. Please respect copyright laws and terms of service of each platform.
             </p>
