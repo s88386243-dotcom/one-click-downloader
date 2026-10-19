@@ -9,6 +9,7 @@ import socket
 import ipaddress
 import subprocess
 import threading
+import urllib.request
 from urllib.parse import urlparse
 from datetime import datetime
 
@@ -229,6 +230,207 @@ def serve_sitemap():
 def serve_google_verification():
     return send_file(os.path.join(BASE_DIR, "google84aae8bf3db6dc70.html"), mimetype="text/html")
 
+# --- YouTube RapidAPI Engine Configuration ---
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "7ca6e5ac3emsh2d893690354b277p1b1451jsn7aa5be9f0834")
+RAPIDAPI_HOST = os.environ.get("RAPIDAPI_HOST", "yt-api.p.rapidapi.com")
+
+def extract_youtube_video_id(url):
+    """Extract 11-char YouTube video ID from various URL formats."""
+    m = re.search(r'(?:v=|\/|youtu\.be\/|embed\/|shorts\/)([0-9A-Za-z_-]{11})', url or "")
+    return m.group(1) if m else None
+
+YOUTUBE_API_CACHE = {}
+
+def fetch_youtube_rapidapi(vid):
+    """Fetch video metadata and direct CDN streaming URLs from YT-API with in-memory caching."""
+    now = time.time()
+    if vid in YOUTUBE_API_CACHE:
+        cached_time, cached_data = YOUTUBE_API_CACHE[vid]
+        if now - cached_time < 3600:
+            return cached_data
+
+    req = urllib.request.Request(
+        f"https://{RAPIDAPI_HOST}/dl?id={vid}",
+        headers={
+            "x-rapidapi-key": RAPIDAPI_KEY,
+            "x-rapidapi-host": RAPIDAPI_HOST,
+            "User-Agent": "Mozilla/5.0"
+        }
+    )
+    with urllib.request.urlopen(req, timeout=25) as res:
+        data = json.loads(res.read().decode("utf-8"))
+        if data.get("status") == "OK" or data.get("title"):
+            YOUTUBE_API_CACHE[vid] = (now, data)
+            return data
+        raise Exception(data.get("message") or "RapidAPI could not resolve YouTube video.")
+
+def download_stream_to_file(stream_url, dest_path, task_id, start_pct=0, end_pct=100):
+    """Download Google CDN stream in chunks with real-time speed & progress updates."""
+    req = urllib.request.Request(
+        stream_url,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    )
+    with urllib.request.urlopen(req, timeout=40) as response, open(dest_path, "wb") as out_file:
+        total_size = int(response.headers.get("content-length", 0))
+        downloaded = 0
+        chunk_size = 512 * 1024
+        start_time = time.time()
+        last_update = start_time
+
+        while True:
+            chunk = response.read(chunk_size)
+            if not chunk:
+                break
+            out_file.write(chunk)
+            downloaded += len(chunk)
+            now = time.time()
+            if now - last_update >= 0.4:
+                last_update = now
+                pct_range = end_pct - start_pct
+                curr_pct = round(start_pct + (downloaded / total_size * pct_range), 1) if total_size else round((start_pct + end_pct) / 2, 1)
+                speed_bytes = downloaded / max(now - start_time, 0.001)
+                speed_str = f"{speed_bytes / (1024 * 1024):.1f} MB/s" if speed_bytes > 1024 * 1024 else f"{speed_bytes / 1024:.0f} KB/s"
+                update_task_state(task_id, percent=curr_pct, speed=speed_str, status="downloading")
+    return True
+
+def download_youtube_via_rapidapi(task_id, vid, quality, title_hint):
+    """Download YouTube video/audio using high-speed direct CDN streams from YT-API."""
+    yt_data = fetch_youtube_rapidapi(vid)
+    sanitized_title = sanitize_filename(title_hint or yt_data.get("title") or "youtube_video")
+    
+    prog_formats = [f for f in yt_data.get("formats", []) if f.get("url")]
+    adapt_formats = [f for f in yt_data.get("adaptiveFormats", []) if f.get("url")]
+    
+    audio_formats = [f for f in adapt_formats if "audio" in f.get("mimeType", "")]
+    best_audio = None
+    for f in audio_formats:
+        if f.get("itag") == 140 or "mp4" in f.get("mimeType", ""):
+            best_audio = f
+            break
+    if not best_audio and audio_formats:
+        best_audio = audio_formats[0]
+
+    final_output = None
+
+    if quality == "mp3":
+        if not best_audio:
+            raise Exception("No audio stream found.")
+        temp_audio = os.path.join(DOWNLOADS_DIR, f"{task_id}_temp_audio.m4a")
+        final_mp3 = os.path.join(DOWNLOADS_DIR, f"{task_id}_{sanitized_title}.mp3")
+        
+        update_task_state(task_id, status="downloading", speed="Downloading Audio...")
+        download_stream_to_file(best_audio["url"], temp_audio, task_id, 0, 85)
+        
+        update_task_state(task_id, status="processing", speed="Converting to MP3...", percent=90)
+        if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
+            cmd = [FFMPEG_PATH, "-y", "-i", temp_audio, "-vn", "-ar", "44100", "-ac", "2", "-b:a", "192k", final_mp3]
+            res = subprocess.run(cmd, capture_output=True, timeout=120)
+            if os.path.exists(temp_audio):
+                try: os.remove(temp_audio)
+                except Exception: pass
+            if not os.path.exists(final_mp3):
+                raise Exception("FFmpeg MP3 conversion failed.")
+            final_output = final_mp3
+        else:
+            final_output = temp_audio
+            
+    else:
+        target_prog = None
+        for f in prog_formats:
+            ql = f.get("qualityLabel", "")
+            if quality == "360" and "360" in ql:
+                target_prog = f
+                break
+            elif quality == "720" and "720" in ql:
+                target_prog = f
+                break
+
+        if target_prog:
+            final_mp4 = os.path.join(DOWNLOADS_DIR, f"{task_id}_{sanitized_title}.mp4")
+            download_stream_to_file(target_prog["url"], final_mp4, task_id, 0, 98)
+            final_output = final_mp4
+        else:
+            target_vid = None
+            video_formats = [f for f in adapt_formats if "video" in f.get("mimeType", "")]
+            
+            if quality == "1080":
+                for f in video_formats:
+                    if "1080" in f.get("qualityLabel", "") and "mp4" in f.get("mimeType", ""):
+                        target_vid = f
+                        break
+                if not target_vid:
+                    for f in video_formats:
+                        if "1080" in f.get("qualityLabel", ""):
+                            target_vid = f
+                            break
+            elif quality == "720":
+                for f in video_formats:
+                    if "720" in f.get("qualityLabel", "") and "mp4" in f.get("mimeType", ""):
+                        target_vid = f
+                        break
+            elif quality == "480":
+                for f in video_formats:
+                    if "480" in f.get("qualityLabel", ""):
+                        target_vid = f
+                        break
+
+            if not target_vid and video_formats:
+                mp4_vids = [f for f in video_formats if "mp4" in f.get("mimeType", "")]
+                target_vid = mp4_vids[0] if mp4_vids else video_formats[0]
+
+            if not target_vid:
+                raise Exception("Could not find suitable video stream.")
+
+            temp_video = os.path.join(DOWNLOADS_DIR, f"{task_id}_temp_vid.mp4")
+            temp_audio = os.path.join(DOWNLOADS_DIR, f"{task_id}_temp_aud.m4a")
+            final_mp4 = os.path.join(DOWNLOADS_DIR, f"{task_id}_{sanitized_title}.mp4")
+
+            update_task_state(task_id, status="downloading", speed="Downloading Video...")
+            download_stream_to_file(target_vid["url"], temp_video, task_id, 0, 75)
+
+            if best_audio:
+                update_task_state(task_id, status="downloading", speed="Downloading Audio...")
+                download_stream_to_file(best_audio["url"], temp_audio, task_id, 75, 92)
+
+            update_task_state(task_id, status="processing", speed="Finalizing HD Video...", percent=95)
+            if FFMPEG_PATH and os.path.exists(temp_video) and os.path.exists(temp_audio):
+                cmd = [
+                    FFMPEG_PATH, "-y",
+                    "-i", temp_video,
+                    "-i", temp_audio,
+                    "-c:v", "copy",
+                    "-c:a", "aac",
+                    "-map", "0:v:0",
+                    "-map", "1:a:0",
+                    "-shortest",
+                    final_mp4
+                ]
+                res = subprocess.run(cmd, capture_output=True, timeout=120)
+                try: os.remove(temp_video)
+                except Exception: pass
+                try: os.remove(temp_audio)
+                except Exception: pass
+
+                if not os.path.exists(final_mp4):
+                    raise Exception("FFmpeg video/audio muxing failed.")
+                final_output = final_mp4
+            else:
+                final_output = temp_video
+
+    if final_output and os.path.exists(final_output):
+        final_ext = os.path.splitext(final_output)[1]
+        display_name = f"{sanitized_title}{final_ext}"
+        update_task_state(
+            task_id,
+            status="completed",
+            percent=100,
+            filepath=final_output,
+            filename=display_name,
+            speed="Done!"
+        )
+        return True
+    return False
+
 def extract_video_info_resilient(url):
     """
     Extract video info with resilient fallback strategies.
@@ -325,6 +527,50 @@ def get_video_info():
         return jsonify({"success": False, "error": err_reason or "Invalid URL entered."}), 400
 
     platform = detect_platform(url)
+
+    # High-speed RapidAPI engine for YouTube
+    if platform == "youtube" and RAPIDAPI_KEY:
+        vid = extract_youtube_video_id(url)
+        if vid:
+            try:
+                yt_data = fetch_youtube_rapidapi(vid)
+                title = yt_data.get("title") or "YouTube Video"
+                uploader = yt_data.get("channelTitle") or "YouTube"
+                dur_secs = yt_data.get("lengthSeconds")
+                duration_str = format_duration(dur_secs)
+
+                thumbs = yt_data.get("thumbnail", [])
+                thumbnail = thumbs[-1].get("url") if thumbs else f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+
+                adapt = yt_data.get("adaptiveFormats", [])
+                prog = yt_data.get("formats", [])
+                has_1080 = any("1080" in f.get("qualityLabel", "") for f in adapt + prog)
+                has_720 = any("720" in f.get("qualityLabel", "") for f in adapt + prog)
+
+                quality_options = []
+                quality_options.append({"id": "best", "label": "Maximum Quality (Best)", "ext": "mp4", "badge": "Best MP4", "desc": "Auto Highest Res"})
+                if has_1080:
+                    quality_options.append({"id": "1080", "label": "Full HD (1080p)", "ext": "mp4", "badge": "1080p MP4", "desc": "Best Quality"})
+                if has_720:
+                    quality_options.append({"id": "720", "label": "HD (720p)", "ext": "mp4", "badge": "720p MP4", "desc": "Standard HD"})
+                quality_options.append({"id": "480", "label": "SD (480p)", "ext": "mp4", "badge": "480p MP4", "desc": "Fast & Light"})
+                quality_options.append({"id": "360", "label": "SD (360p)", "ext": "mp4", "badge": "360p MP4", "desc": "Fast & Mobile Friendly"})
+                quality_options.append({"id": "mp3", "label": "Audio Only (MP3)", "ext": "mp3", "badge": "MP3 Audio", "desc": "High Quality 192k"})
+
+                return jsonify({
+                    "success": True,
+                    "data": {
+                        "url": url,
+                        "title": title,
+                        "uploader": uploader,
+                        "duration": duration_str,
+                        "thumbnail": thumbnail,
+                        "platform": platform,
+                        "qualities": quality_options
+                    }
+                })
+            except Exception as e:
+                print(f"[Warning] RapidAPI fetch failed, falling back to yt-dlp: {e}")
 
     try:
         info = extract_video_info_resilient(url)
@@ -442,6 +688,18 @@ def run_download_task(task_id, url, quality, title_hint):
             )
 
     is_yt = "youtube.com" in url.lower() or "youtu.be" in url.lower()
+
+    if is_yt and RAPIDAPI_KEY:
+        vid = extract_youtube_video_id(url)
+        if vid:
+            try:
+                print(f"[+] Downloading YouTube video {vid} via RapidAPI engine...")
+                success = download_youtube_via_rapidapi(task_id, vid, quality, title_hint)
+                if success:
+                    return
+            except Exception as e:
+                print(f"[Warning] RapidAPI download failed: {e}, falling back to yt-dlp...")
+
     cookie_path = os.path.join(BASE_DIR, "cookies.txt")
     has_cookies = os.path.isfile(cookie_path) and os.path.getsize(cookie_path) > 10
 
