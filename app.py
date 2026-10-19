@@ -37,8 +37,19 @@ if not FFMPEG_PATH:
                 pass
         FFMPEG_PATH = ffmpeg_alias if os.path.exists(ffmpeg_alias) else raw_ffmpeg
         os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+        if os.name != "nt" and FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
+            try:
+                os.chmod(FFMPEG_PATH, 0o755)
+            except Exception:
+                pass
     except Exception as e:
         print(f"[Warning] Could not initialize imageio-ffmpeg: {e}")
+
+if FFMPEG_PATH and os.name != "nt" and os.path.exists(FFMPEG_PATH):
+    try:
+        os.chmod(FFMPEG_PATH, 0o755)
+    except Exception:
+        pass
 
 import yt_dlp
 
@@ -239,17 +250,26 @@ def extract_video_info_resilient(url):
             pass
 
     if is_yt:
-        strategies = [
-            {"extractor_args": {"youtube": {"player_client": ["visionos"]}}, "use_cookies": False},
-            {"extractor_args": {"youtube": {"player_client": ["visionos", "web_embedded"]}}, "use_cookies": False},
+        strategies = []
+        if has_cookies:
+            strategies.extend([
+                {"extractor_args": {"youtube": {"player_client": ["android"]}}, "use_cookies": True},
+                {"extractor_args": {"youtube": {"player_client": ["mweb"]}}, "use_cookies": True},
+                {"extractor_args": {"youtube": {"player_client": ["ios"]}}, "use_cookies": True},
+                {"extractor_args": {"youtube": {"player_client": ["visionos"]}}, "use_cookies": True},
+                {"extractor_args": {"youtube": {"player_client": ["visionos", "web_embedded"]}}, "use_cookies": True},
+                {"extractor_args": {}, "use_cookies": True},
+            ])
+        strategies.extend([
             {"extractor_args": {"youtube": {"player_client": ["android"]}}, "use_cookies": False},
             {"extractor_args": {"youtube": {"player_client": ["android"], "player_skip": ["webpage"]}}, "use_cookies": False},
             {"extractor_args": {"youtube": {"player_client": ["mweb"]}}, "use_cookies": False},
-            {"extractor_args": {}, "use_cookies": has_cookies},
-            {"extractor_args": {}, "use_cookies": False}
-        ]
+            {"extractor_args": {"youtube": {"player_client": ["ios"]}}, "use_cookies": False},
+            {"extractor_args": {"youtube": {"player_client": ["visionos"]}}, "use_cookies": False},
+            {"extractor_args": {"youtube": {"player_client": ["visionos", "web_embedded"]}}, "use_cookies": False},
+            {"extractor_args": {}, "use_cookies": False},
+        ])
     else:
-        # STRICT CONSTRAINT: Instagram and Facebook logic is 100% UNTOUCHED
         strategies = [{"extractor_args": {}, "use_cookies": False}]
 
     last_err = None
@@ -266,6 +286,7 @@ def extract_video_info_resilient(url):
         # Only inject desktop user agent for non-YouTube platforms (IG, FB, etc.)
         if not is_yt:
             ydl_opts["user_agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ydl_opts["format_sort"] = ["hasaud", "res", "fps"]
 
         if strat.get("extractor_args"):
             ydl_opts["extractor_args"] = strat["extractor_args"]
@@ -471,16 +492,25 @@ def run_download_task(task_id, url, quality, title_hint):
             ydl_opts["format"] = "bv*+ba/b/best"
             ydl_opts["merge_output_format"] = "mp4"
 
-        yt_strategies = [
+        yt_strategies = []
+        if has_cookies:
+            yt_strategies.extend([
+                {"extractor_args": {"youtube": {"player_client": ["android"]}}, "use_cookies": True},
+                {"extractor_args": {"youtube": {"player_client": ["mweb"]}}, "use_cookies": True},
+                {"extractor_args": {"youtube": {"player_client": ["visionos"]}}, "use_cookies": True},
+                {"extractor_args": {"youtube": {"player_client": ["visionos", "web_embedded"]}}, "use_cookies": True},
+                {"extractor_args": {}, "use_cookies": True},
+            ])
+        yt_strategies.extend([
+            {"extractor_args": {"youtube": {"player_client": ["android"]}}, "use_cookies": False},
+            {"extractor_args": {"youtube": {"player_client": ["mweb"]}}, "use_cookies": False},
             {"extractor_args": {"youtube": {"player_client": ["visionos"]}}, "use_cookies": False},
             {"extractor_args": {"youtube": {"player_client": ["visionos", "web_embedded"]}}, "use_cookies": False},
-            {"extractor_args": {"youtube": {"player_client": ["android_vr"]}}, "use_cookies": False},
-            {"extractor_args": {"youtube": {"player_client": ["android"]}}, "use_cookies": False},
-            {"extractor_args": {}, "use_cookies": has_cookies},
-            {"extractor_args": {}, "use_cookies": False}
-        ]
+            {"extractor_args": {}, "use_cookies": False},
+        ])
     else:
-        # STRICT CONSTRAINT: Instagram and Facebook logic is 100% UNTOUCHED
+        # Instagram and Facebook logic: prioritize audio streams so reels never download muted
+        ydl_opts["format_sort"] = ["hasaud", "res", "fps"]
         if quality == "mp3":
             ydl_opts["format"] = "ba/b"
             ydl_opts["postprocessors"] = [{
@@ -489,16 +519,16 @@ def run_download_task(task_id, url, quality, title_hint):
                 "preferredquality": "192",
             }]
         elif quality == "1080":
-            ydl_opts["format"] = "bv*[height<=1080]+ba/b[height<=1080]/b"
+            ydl_opts["format"] = "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b/best"
             ydl_opts["merge_output_format"] = "mp4"
         elif quality == "720":
-            ydl_opts["format"] = "bv*[height<=720]+ba/b[height<=720]/b"
+            ydl_opts["format"] = "bv*[height<=720]+ba/b[height<=720]/bv*+ba/b/best"
             ydl_opts["merge_output_format"] = "mp4"
         elif quality == "480":
-            ydl_opts["format"] = "bv*[height<=480]+ba/b[height<=480]/b"
+            ydl_opts["format"] = "bv*[height<=480]+ba/b[height<=480]/bv*+ba/b/best"
             ydl_opts["merge_output_format"] = "mp4"
         else:  # best
-            ydl_opts["format"] = "bv*+ba/b"
+            ydl_opts["format"] = "bv*+ba/b/best"
             ydl_opts["merge_output_format"] = "mp4"
 
         yt_strategies = [{"extractor_args": {}, "use_cookies": False}]
