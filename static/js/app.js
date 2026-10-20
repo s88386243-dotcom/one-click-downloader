@@ -57,17 +57,31 @@ document.addEventListener("DOMContentLoaded", () => {
     // Platform detection helper
     function detectPlatform(url) {
         const lower = (url || "").toLowerCase();
-        if (lower.includes("instagram.com")) {
+        if (lower.includes("instagram.com/stories") || lower.includes("instagr.am/stories")) {
             return {
                 name: "Instagram",
-                badge: "Instagram Reel / Post",
+                badge: "Instagram Story",
+                icon: "fa-brands fa-instagram",
+                color: "#e1306c"
+            };
+        } else if (lower.includes("facebook.com/stories")) {
+            return {
+                name: "Facebook",
+                badge: "Facebook Story",
+                icon: "fa-brands fa-facebook",
+                color: "#1877f2"
+            };
+        } else if (lower.includes("instagram.com")) {
+            return {
+                name: "Instagram",
+                badge: "Instagram Reel / Story / Photo",
                 icon: "fa-brands fa-instagram",
                 color: "#e1306c"
             };
         } else if (lower.includes("facebook.com") || lower.includes("fb.watch")) {
             return {
                 name: "Facebook",
-                badge: "Facebook Video / Reel",
+                badge: "Facebook Video / Reel / Story",
                 icon: "fa-brands fa-facebook",
                 color: "#1877f2"
             };
@@ -88,7 +102,7 @@ document.addEventListener("DOMContentLoaded", () => {
         } else if (lower.includes("twitter.com") || lower.includes("x.com")) {
             return {
                 name: "Twitter / X",
-                badge: "Twitter/X Video",
+                badge: "Twitter/X Video / Photo",
                 icon: "fa-brands fa-x-twitter",
                 color: "#ffffff"
             };
@@ -213,12 +227,12 @@ document.addEventListener("DOMContentLoaded", () => {
         currentVideoData = data;
         
         // Thumbnail & Duration
-        videoThumb.src = data.thumbnail || "https://placehold.co/600x340/111827/ffffff?text=Video+Preview";
-        videoDuration.textContent = data.duration || "00:00";
+        videoThumb.src = data.thumbnail || "https://placehold.co/600x340/111827/ffffff?text=Preview";
+        videoDuration.textContent = data.duration || (data.media_type === "photo" ? "HD Photo" : "00:00");
         videoSourceTag.textContent = data.platform.toUpperCase();
 
         // Title & Uploader
-        videoTitle.textContent = data.title || "Video";
+        videoTitle.textContent = data.title || "Media";
         videoAuthorName.textContent = data.uploader || "Author";
 
         // Render Qualities
@@ -230,7 +244,9 @@ document.addEventListener("DOMContentLoaded", () => {
             opt.className = `quality-option ${idx === 0 ? "selected" : ""}`;
             opt.dataset.id = q.id;
 
-            const iconClass = q.ext === "mp3" ? "fa-solid fa-music" : "fa-solid fa-video";
+            const isAudio = q.ext === "mp3";
+            const isImage = q.ext === "jpg" || q.ext === "png" || q.ext === "jpeg" || q.id.startsWith("photo");
+            const iconClass = isAudio ? "fa-solid fa-music" : (isImage ? "fa-solid fa-image" : "fa-solid fa-video");
 
             opt.innerHTML = `
                 <div class="quality-header">
@@ -248,6 +264,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
             qualitiesList.appendChild(opt);
         });
+
+        // Dynamic Download Button Text
+        if (data.media_type === "photo" || (data.qualities[0] && data.qualities[0].id.startsWith("photo"))) {
+            startDownloadBtn.innerHTML = '<i class="fa-solid fa-download"></i> <span>Download Photo Now</span>';
+        } else {
+            startDownloadBtn.innerHTML = '<i class="fa-solid fa-download"></i> <span>Download Now</span>';
+        }
 
         // Show Result Card
         resultCard.style.display = "block";
@@ -324,13 +347,19 @@ document.addEventListener("DOMContentLoaded", () => {
                     const pct = Math.min(100, Math.max(0, data.percent || 0));
                     progressBarFill.style.width = `${pct}%`;
                     progressPercent.textContent = `${pct}%`;
-                    progressStatusText.innerHTML = `<i class="fa-solid fa-cloud-arrow-down fa-bounce"></i> Downloading video...`;
+                    const isImg = selectedQuality && selectedQuality.startsWith("photo");
+                    progressStatusText.innerHTML = isImg 
+                        ? `<i class="fa-solid fa-cloud-arrow-down fa-bounce"></i> Downloading photo...`
+                        : `<i class="fa-solid fa-cloud-arrow-down fa-bounce"></i> Downloading video...`;
                     progressSpeed.innerHTML = `<i class="fa-solid fa-gauge-high"></i> Speed: ${data.speed || "--"}`;
                     progressEta.innerHTML = `<i class="fa-regular fa-clock"></i> ETA: ${data.eta || "--"}`;
                 } else if (data.status === "processing") {
                     progressBarFill.style.width = "100%";
                     progressPercent.textContent = "100%";
-                    progressStatusText.innerHTML = `<i class="fa-solid fa-arrows-rotate fa-spin"></i> Finalizing file & audio merge...`;
+                    const isImg = selectedQuality && selectedQuality.startsWith("photo");
+                    progressStatusText.innerHTML = isImg
+                        ? `<i class="fa-solid fa-arrows-rotate fa-spin"></i> Finalizing image...`
+                        : `<i class="fa-solid fa-arrows-rotate fa-spin"></i> Finalizing file & audio merge...`;
                     progressSpeed.innerHTML = `<i class="fa-solid fa-wand-magic-sparkles"></i> Processing...`;
                     progressEta.innerHTML = `<i class="fa-regular fa-clock"></i> Almost ready!`;
                 } else if (data.status === "completed") {

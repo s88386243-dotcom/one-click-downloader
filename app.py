@@ -162,6 +162,150 @@ def detect_platform(url):
         return "twitter"
     return "other"
 
+def resolve_canonical_url(url):
+    """
+    Resolve shortened, share, or redirect URLs (e.g. facebook.com/share/r/,
+    fb.watch/, youtu.be/, instagram.com/share/) to their direct canonical media URLs.
+    """
+    try:
+        url_l = (url or "").lower()
+        needs_resolution = any(
+            marker in url_l for marker in [
+                "facebook.com/share/",
+                "fb.watch",
+                "instagram.com/share/",
+                "youtu.be/",
+                "bit.ly/",
+                "tinyurl.com/"
+            ]
+        )
+        if needs_resolution:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                }
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                final_url = resp.geturl()
+                if final_url and is_safe_url(final_url)[0]:
+                    return final_url
+    except Exception as e:
+        print(f"[Info] Redirect resolution notice for {url[:50]}: {e}")
+    return url
+
+def fetch_opengraph_fallback(url):
+    """
+    Fallback extractor for public photo and story posts across Instagram, Facebook, and Twitter
+    when video extractors report no video found or fail to resolve.
+    Extracts high-resolution og:image, og:video, and title tags directly.
+    """
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=12) as response:
+            html = response.read().decode("utf-8", errors="ignore")
+
+            og_img = re.search(r'<meta[^>]+property=[\'"]og:image[\'"][^>]+content=[\'"]([^\'"]+)[\'"]', html, re.I)
+            if not og_img:
+                og_img = re.search(r'<meta[^>]+content=[\'"]([^\'"]+)[\'"][^>]+property=[\'"]og:image[\'"]', html, re.I)
+            if not og_img:
+                og_img = re.search(r'<meta[^>]+name=[\'"]twitter:image[\'"][^>]+content=[\'"]([^\'"]+)[\'"]', html, re.I)
+
+            og_vid = re.search(r'<meta[^>]+property=[\'"]og:video[\'"][^>]+content=[\'"]([^\'"]+)[\'"]', html, re.I)
+            if not og_vid:
+                og_vid = re.search(r'<meta[^>]+content=[\'"]([^\'"]+)[\'"][^>]+property=[\'"]og:video[\'"]', html, re.I)
+
+            og_title = re.search(r'<meta[^>]+property=[\'"]og:title[\'"][^>]+content=[\'"]([^\'"]+)[\'"]', html, re.I)
+            if not og_title:
+                og_title = re.search(r'<title>([^<]+)</title>', html, re.I)
+
+            title_text = (og_title.group(1).strip() if og_title else "Social Media Post").replace("&amp;", "&").replace("&quot;", '"')
+            img_url = (og_img.group(1).replace("&amp;", "&") if og_img else None)
+            vid_url = (og_vid.group(1).replace("&amp;", "&") if og_vid else None)
+
+            if vid_url:
+                return {
+                    "title": title_text,
+                    "thumbnail": img_url or "",
+                    "formats": [{
+                        "format_id": "direct_mp4",
+                        "url": vid_url,
+                        "ext": "mp4",
+                        "vcodec": "avc1",
+                        "acodec": "mp4a",
+                        "height": 1080
+                    }],
+                    "duration": None,
+                    "is_photo": False
+                }
+            elif img_url:
+                return {
+                    "title": title_text,
+                    "thumbnail": img_url,
+                    "thumbnails": [{"url": img_url, "width": 1080, "height": 1080}],
+                    "formats": [],
+                    "duration": None,
+                    "is_photo": True,
+                    "url": img_url
+                }
+    except Exception as e:
+        print(f"[Info] OpenGraph fallback notice: {e}")
+    return None
+
+def parse_media_info(info):
+    """
+    Intelligently inspect info dict to distinguish between:
+    - Standard Video (with formats)
+    - Photo / Image post (with thumbnails but no video formats)
+    - Carousel / Playlist (with entries)
+    Returns: (target_entry, is_photo, best_image_url)
+    """
+    if not info:
+        return None, False, None
+
+    # Handle playlist / carousel entries
+    entries = info.get("entries")
+    if entries and isinstance(entries, list) and len(entries) > 0:
+        valid_entries = [e for e in entries if e]
+        # Prefer an entry that has video formats if available, otherwise first entry
+        vid_entry = next((e for e in valid_entries if any(f.get("vcodec") != "none" and (f.get("height") or f.get("ext") in ("mp4", "webm", "mkv")) for f in (e.get("formats") or []))), None)
+        target = vid_entry or (valid_entries[0] if valid_entries else info)
+    else:
+        target = info
+
+    formats = target.get("formats") or []
+    has_video = any(
+        f.get("vcodec") != "none" and (f.get("height") or f.get("ext") in ("mp4", "webm", "mkv"))
+        for f in formats
+    ) if formats else False
+
+    # Collect best image from thumbnails
+    thumbs = target.get("thumbnails") or info.get("thumbnails") or []
+    best_image = None
+    if thumbs:
+        sorted_thumbs = sorted(
+            [t for t in thumbs if isinstance(t, dict) and t.get("url")],
+            key=lambda x: (x.get("width") or 0) * (x.get("height") or 0),
+            reverse=True
+        )
+        if sorted_thumbs:
+            best_image = sorted_thumbs[0].get("url")
+
+    if not best_image:
+        best_image = target.get("thumbnail") or info.get("thumbnail")
+    if not best_image and target.get("url") and any((target.get("ext") or "").endswith(e) for e in ("jpg", "jpeg", "png", "webp")):
+        best_image = target.get("url")
+
+    is_photo = (not has_video) and bool(best_image or target.get("is_photo"))
+    return target, is_photo, best_image
+
 def cleanup_old_files():
     """Periodically remove files and task states older than 15 minutes."""
     while True:
@@ -516,16 +660,16 @@ def download_youtube_via_rapidapi(task_id, vid, quality, title_hint):
 
 def extract_video_info_resilient(url):
     """
-    Extract video info with resilient fallback strategies.
-    For YouTube, prioritize modern 'visionos' and 'web_embedded' clients
-    which bypass datacenter IP BotGuard blocks and provide full 1080p/720p/480p streams.
-    Cachedir is disabled to prevent poisoned session tokens across downloads.
+    Extract video or photo metadata with resilient fallback strategies.
+    YouTube: VisionOS and Android clients waterfall to bypass BotGuard.
+    Instagram / Facebook: Desktop User-Agent rotation with optional cookies.txt.
+    Public Photos: OpenGraph fallback when video formats are absent.
     """
     is_yt = "youtube.com" in url.lower() or "youtu.be" in url.lower()
     cookie_path = os.path.join(BASE_DIR, "cookies.txt")
     has_cookies = os.path.isfile(cookie_path) and os.path.getsize(cookie_path) > 10
 
-    env_cookies = os.environ.get("YOUTUBE_COOKIES")
+    env_cookies = os.environ.get("YOUTUBE_COOKIES") or os.environ.get("INSTAGRAM_COOKIES") or os.environ.get("COOKIES")
     if env_cookies and not has_cookies:
         try:
             with open(cookie_path, "w", encoding="utf-8") as cf:
@@ -555,7 +699,10 @@ def extract_video_info_resilient(url):
             {"extractor_args": {}, "use_cookies": False},
         ])
     else:
-        strategies = [{"extractor_args": {}, "use_cookies": False}]
+        strategies = []
+        if has_cookies:
+            strategies.append({"extractor_args": {}, "use_cookies": True})
+        strategies.append({"extractor_args": {}, "use_cookies": False})
 
     last_err = None
     for strat in strategies:
@@ -568,7 +715,6 @@ def extract_video_info_resilient(url):
             "source_address": "0.0.0.0",
             "js_runtimes": {"deno": {}, "node": {}},
         }
-        # Only inject desktop user agent for non-YouTube platforms (IG, FB, etc.)
         if not is_yt:
             ydl_opts["user_agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
             ydl_opts["format_sort"] = ["hasaud", "res", "fps"]
@@ -587,28 +733,36 @@ def extract_video_info_resilient(url):
             last_err = e
             continue
 
-    raise last_err or Exception("Could not fetch video information.")
+    # Fallback for public photos when yt-dlp reports no video
+    if not is_yt:
+        og_info = fetch_opengraph_fallback(url)
+        if og_info:
+            return og_info
+
+    raise last_err or Exception("Could not fetch media information.")
 
 @app.route("/api/info", methods=["POST"])
 def get_video_info():
-    """Fetch video metadata securely with robust fallback clients."""
+    """Fetch video or photo metadata securely with robust fallback clients."""
     data = request.get_json(force=True, silent=True) or {}
-    url = (data.get("url") or "").strip()
+    raw_url = (data.get("url") or "").strip()
 
-    if not url:
-        return jsonify({"success": False, "error": "Kripya video URL enter karein (Please provide a URL)"}), 400
+    if not raw_url:
+        return jsonify({"success": False, "error": "Kripya video ya photo URL enter karein (Please provide a URL)"}), 400
 
-    if len(url) > 2048:
+    if len(raw_url) > 2048:
         return jsonify({"success": False, "error": "URL bahut lamba hai (URL length exceeded limit)"}), 400
 
-    if not (url.startswith("http://") or url.startswith("https://")):
-        url = "https://" + url
+    if not (raw_url.startswith("http://") or raw_url.startswith("https://")):
+        raw_url = "https://" + raw_url
 
     # SSRF Protection
-    is_safe, err_reason = is_safe_url(url)
+    is_safe, err_reason = is_safe_url(raw_url)
     if not is_safe:
         return jsonify({"success": False, "error": err_reason or "Invalid URL entered."}), 400
 
+    # Follow redirects for short and share URLs (facebook.com/share/r, fb.watch, instagram.com/share)
+    url = resolve_canonical_url(raw_url)
     platform = detect_platform(url)
 
     # High-speed RapidAPI engine for YouTube
@@ -631,7 +785,7 @@ def get_video_info():
                 has_720 = any("720" in f.get("qualityLabel", "") for f in adapt + prog)
 
                 quality_options = []
-                quality_options.append({"id": "best", "label": "Maximum Quality (Best)", "ext": "mp4", "badge": "Best MP4", "desc": "Auto Highest Res"})
+                quality_options.append({"id": "best", "label": "Maximum Quality (Best)", "ext": "mp4", "badge": "Best MP4", "desc": "Auto Highest Res (Sound Included)"})
                 if has_1080:
                     quality_options.append({"id": "1080", "label": "Full HD (1080p)", "ext": "mp4", "badge": "1080p MP4", "desc": "Best Quality"})
                 if has_720:
@@ -649,6 +803,7 @@ def get_video_info():
                         "duration": duration_str,
                         "thumbnail": thumbnail,
                         "platform": platform,
+                        "media_type": "video",
                         "qualities": quality_options
                     }
                 })
@@ -656,43 +811,96 @@ def get_video_info():
                 print(f"[Warning] RapidAPI fetch failed, falling back to yt-dlp: {e}")
 
     try:
-        info = extract_video_info_resilient(url)
-        
-        if not info:
-            return jsonify({"success": False, "error": "Video details fetch nahi ho paye. Kripya URL check karein."}), 400
+        raw_info = extract_video_info_resilient(url)
+        if not raw_info:
+            return jsonify({"success": False, "error": "Media details fetch nahi ho paye. Kripya URL check karein."}), 400
 
-        title = info.get("title") or "Video"
-        uploader = info.get("uploader") or info.get("channel") or info.get("creator") or platform.capitalize()
-        duration_secs = info.get("duration")
-        duration_str = format_duration(duration_secs)
-        thumbnail = info.get("thumbnail") or ""
-        
-        # Parse available video qualities
-        formats = info.get("formats") or []
-        heights = set()
-        for f in formats:
-            h = f.get("height")
-            if h and isinstance(h, int):
-                heights.add(h)
+        target, is_photo, best_image = parse_media_info(raw_info)
+        title = target.get("title") or raw_info.get("title") or "Media"
+        uploader = target.get("uploader") or target.get("channel") or raw_info.get("uploader") or platform.capitalize()
+        thumbnail = best_image or target.get("thumbnail") or raw_info.get("thumbnail") or ""
 
         quality_options = []
-        
-        # 1080p Full HD
-        if any(h >= 1080 for h in heights) or platform in ["instagram", "facebook"]:
-            quality_options.append({"id": "1080", "label": "Full HD (1080p)", "ext": "mp4", "badge": "1080p MP4", "desc": "Best Quality"})
-        
-        # 720p HD
-        if any(h >= 720 for h in heights) or platform in ["instagram", "facebook"]:
-            quality_options.append({"id": "720", "label": "HD (720p)", "ext": "mp4", "badge": "720p MP4", "desc": "Standard HD"})
 
-        # 480p / 360p SD
-        quality_options.append({"id": "480", "label": "SD (480p)", "ext": "mp4", "badge": "480p MP4", "desc": "Fast & Light"})
-        
-        # Always offer Best Available as default first option
-        quality_options.insert(0, {"id": "best", "label": "Maximum Quality (Best)", "ext": "mp4", "badge": "Best MP4", "desc": "Auto Highest Res"})
+        if is_photo:
+            duration_str = "HD Photo"
+            media_type = "photo"
+            quality_options.append({
+                "id": "photo_hd",
+                "label": "Original Photo (High-Res JPG)",
+                "ext": "jpg",
+                "badge": "HD Photo",
+                "desc": "Original Full Resolution Image"
+            })
+            quality_options.append({
+                "id": "photo_sd",
+                "label": "Standard Quality Photo (JPG)",
+                "ext": "jpg",
+                "badge": "Standard JPG",
+                "desc": "Compressed & Fast Download"
+            })
+        else:
+            duration_secs = target.get("duration") or raw_info.get("duration")
+            duration_str = format_duration(duration_secs)
+            media_type = "video"
 
-        # MP3 Audio option
-        quality_options.append({"id": "mp3", "label": "Audio Only (MP3)", "ext": "mp3", "badge": "MP3 Audio", "desc": "High Quality 192k"})
+            formats = target.get("formats") or []
+            heights = set()
+            for f in formats:
+                h = f.get("height")
+                if h and isinstance(h, int):
+                    heights.add(h)
+
+            quality_options.append({
+                "id": "best",
+                "label": "Maximum Quality (Best MP4)",
+                "ext": "mp4",
+                "badge": "Best MP4",
+                "desc": "Auto Highest Res (Sound Included)"
+            })
+
+            if any(h >= 1080 for h in heights) or platform in ["instagram", "facebook"]:
+                quality_options.append({
+                    "id": "1080",
+                    "label": "Full HD (1080p)",
+                    "ext": "mp4",
+                    "badge": "1080p MP4",
+                    "desc": "Crisp 1080p Audio+Video"
+                })
+
+            if any(h >= 720 for h in heights) or platform in ["instagram", "facebook"]:
+                quality_options.append({
+                    "id": "720",
+                    "label": "HD (720p)",
+                    "ext": "mp4",
+                    "badge": "720p MP4",
+                    "desc": "Standard HD Audio+Video"
+                })
+
+            quality_options.append({
+                "id": "480",
+                "label": "SD (480p)",
+                "ext": "mp4",
+                "badge": "480p MP4",
+                "desc": "Fast & Light"
+            })
+
+            quality_options.append({
+                "id": "mp3",
+                "label": "Audio Only (MP3)",
+                "ext": "mp3",
+                "badge": "MP3 Audio",
+                "desc": "High Quality 192k Audio"
+            })
+
+            if best_image:
+                quality_options.append({
+                    "id": "photo_hd",
+                    "label": "Download Cover Photo (JPG)",
+                    "ext": "jpg",
+                    "badge": "HD Photo",
+                    "desc": "High-Res Post Thumbnail / Cover"
+                })
 
         return jsonify({
             "success": True,
@@ -703,25 +911,30 @@ def get_video_info():
                 "duration": duration_str,
                 "thumbnail": thumbnail,
                 "platform": platform,
+                "media_type": media_type,
                 "qualities": quality_options
             }
         })
+
     except Exception as e:
         err_msg = str(e)
-        if "Private video" in err_msg or "login" in err_msg.lower():
-            err_text = "Yeh video private hai ya isme login ki zaroorat hai."
-        elif "This video is unavailable" in err_msg:
-            err_text = "Yeh video YouTube par available nahi hai ya remove ho chuka hai."
-        elif "Unsupported URL" in err_msg:
+        err_lower = err_msg.lower()
+        if "/stories/" in url.lower():
+            err_text = "Instagram / Facebook Stories 24-ghante ke liye hoti hain aur Meta inke liye login maangta hai. Story download karne ke liye Admin panel (/admin) me cookies save karein, ya public Reel / Post ka link paste karein."
+        elif "private video" in err_lower or "login" in err_lower or "this content is only available" in err_lower:
+            err_text = "Yeh video ya photo private hai ya isme login ki zaroorat hai. Kripya public link use karein ya Admin panel me cookies add karein."
+        elif "this video is unavailable" in err_lower:
+            err_text = "Yeh video available nahi hai ya platform se remove ho chuka hai."
+        elif "unsupported url" in err_lower:
             err_text = "Unsupported URL. Kripya valid YouTube, Instagram ya Facebook link dalein."
         else:
             first_line = err_msg.strip().splitlines()[-1] if err_msg else ""
             clean_hint = re.sub(r'ERROR:\s*\[.*?\]\s*', '', first_line).strip()
-            err_text = f"Fetch error: {clean_hint[:90]}" if clean_hint else "Video fetch karne me error aaya. Kripya link verify karein."
+            err_text = f"Fetch error: {clean_hint[:90]}" if clean_hint else "Details fetch karne me error aaya. Kripya link verify karein."
         return jsonify({"success": False, "error": err_text}), 400
 
 def run_download_task(task_id, url, quality, title_hint):
-    """Execute download in background thread and update shared persistent task state."""
+    """Execute video or photo download in background thread with audio guarantee and shared disk state."""
     update_task_state(
         task_id,
         status="downloading",
@@ -734,6 +947,53 @@ def run_download_task(task_id, url, quality, title_hint):
     )
 
     sanitized_title = sanitize_filename(title_hint)
+    is_yt = "youtube.com" in url.lower() or "youtu.be" in url.lower()
+
+    # --- PHOTO DOWNLOAD BRANCH ---
+    if quality in ("photo_hd", "photo_sd", "photo", "image"):
+        try:
+            update_task_state(task_id, status="downloading", percent=25, speed="Fetching HD Photo...", eta="1s")
+            info = extract_video_info_resilient(url)
+            target, is_photo, best_image = parse_media_info(info)
+
+            target_img = best_image or (target.get("thumbnail") if target else None) or (info.get("thumbnail") if info else None)
+            if not target_img:
+                raise Exception("Could not find photo image URL.")
+
+            output_file = os.path.join(DOWNLOADS_DIR, f"{task_id}_{sanitized_title}.jpg")
+            download_stream_to_file(target_img, output_file, task_id, 25, 95)
+
+            if os.path.exists(output_file) and os.path.getsize(output_file) > 100:
+                display_name = f"{sanitized_title}.jpg"
+                update_task_state(
+                    task_id,
+                    status="completed",
+                    percent=100,
+                    filepath=output_file,
+                    filename=display_name,
+                    speed="Done!"
+                )
+                return
+            else:
+                raise Exception("Photo download could not be verified.")
+        except Exception as e:
+            print(f"[Error] Photo download failed: {e}")
+            update_task_state(task_id, status="error", error=f"Photo download failed: {str(e)[:100]}")
+            return
+
+    # --- YOUTUBE RAPIDAPI BRANCH ---
+    if is_yt and RAPIDAPI_KEY:
+        vid = extract_youtube_video_id(url)
+        if vid:
+            try:
+                print(f"[+] Downloading YouTube video {vid} via RapidAPI engine...")
+                success = download_youtube_via_rapidapi(task_id, vid, quality, title_hint)
+                if success:
+                    return
+            except Exception as e:
+                print(f"[Warning] RapidAPI download failed: {e}, falling back to yt-dlp...")
+
+    # --- YT-DLP VIDEO & AUDIO ENGINE ---
     output_template = os.path.join(DOWNLOADS_DIR, f"{task_id}_{sanitized_title}.%(ext)s")
 
     def progress_hook(d):
@@ -741,13 +1001,10 @@ def run_download_task(task_id, url, quality, title_hint):
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             downloaded = d.get("downloaded_bytes") or 0
             percent = round((downloaded / total * 100), 1) if total > 0 else 0
-            
+
             speed_bytes = d.get("speed")
             if speed_bytes:
-                if speed_bytes > 1024 * 1024:
-                    speed_str = f"{speed_bytes / (1024 * 1024):.1f} MB/s"
-                else:
-                    speed_str = f"{speed_bytes / 1024:.0f} KB/s"
+                speed_str = f"{speed_bytes / (1024 * 1024):.1f} MB/s" if speed_bytes > 1024 * 1024 else f"{speed_bytes / 1024:.0f} KB/s"
             else:
                 speed_str = "Downloading..."
 
@@ -770,23 +1027,10 @@ def run_download_task(task_id, url, quality, title_hint):
                 speed="Processing / Merging..."
             )
 
-    is_yt = "youtube.com" in url.lower() or "youtu.be" in url.lower()
-
-    if is_yt and RAPIDAPI_KEY:
-        vid = extract_youtube_video_id(url)
-        if vid:
-            try:
-                print(f"[+] Downloading YouTube video {vid} via RapidAPI engine...")
-                success = download_youtube_via_rapidapi(task_id, vid, quality, title_hint)
-                if success:
-                    return
-            except Exception as e:
-                print(f"[Warning] RapidAPI download failed: {e}, falling back to yt-dlp...")
-
     cookie_path = os.path.join(BASE_DIR, "cookies.txt")
     has_cookies = os.path.isfile(cookie_path) and os.path.getsize(cookie_path) > 10
 
-    env_cookies = os.environ.get("YOUTUBE_COOKIES")
+    env_cookies = os.environ.get("YOUTUBE_COOKIES") or os.environ.get("INSTAGRAM_COOKIES") or os.environ.get("COOKIES")
     if env_cookies and not has_cookies:
         try:
             with open(cookie_path, "w", encoding="utf-8") as cf:
@@ -850,7 +1094,8 @@ def run_download_task(task_id, url, quality, title_hint):
             {"extractor_args": {}, "use_cookies": False},
         ])
     else:
-        # Instagram and Facebook logic: prioritize audio streams so reels never download muted
+        # Instagram and Facebook logic:
+        # Prioritize progressive combined streams (b) first so audio is 100% baked in and never missing!
         ydl_opts["format_sort"] = ["hasaud", "res", "fps"]
         if quality == "mp3":
             ydl_opts["format"] = "ba/b"
@@ -860,19 +1105,22 @@ def run_download_task(task_id, url, quality, title_hint):
                 "preferredquality": "192",
             }]
         elif quality == "1080":
-            ydl_opts["format"] = "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b/best"
+            ydl_opts["format"] = "b[height<=1080]/bv*[height<=1080]+ba/b/best"
             ydl_opts["merge_output_format"] = "mp4"
         elif quality == "720":
-            ydl_opts["format"] = "bv*[height<=720]+ba/b[height<=720]/bv*+ba/b/best"
+            ydl_opts["format"] = "b[height<=720]/bv*[height<=720]+ba/b/best"
             ydl_opts["merge_output_format"] = "mp4"
         elif quality == "480":
-            ydl_opts["format"] = "bv*[height<=480]+ba/b[height<=480]/bv*+ba/b/best"
+            ydl_opts["format"] = "b[height<=480]/bv*[height<=480]+ba/b/best"
             ydl_opts["merge_output_format"] = "mp4"
         else:  # best
-            ydl_opts["format"] = "bv*+ba/b/best"
+            ydl_opts["format"] = "b/bv*+ba/best"
             ydl_opts["merge_output_format"] = "mp4"
 
-        yt_strategies = [{"extractor_args": {}, "use_cookies": False}]
+        yt_strategies = []
+        if has_cookies:
+            yt_strategies.append({"extractor_args": {}, "use_cookies": True})
+        yt_strategies.append({"extractor_args": {}, "use_cookies": False})
 
     download_success = False
     last_download_err = None
@@ -941,7 +1189,7 @@ def start_download():
     data = request.get_json(force=True, silent=True) or {}
     url = (data.get("url") or "").strip()
     quality = (data.get("quality") or "best").strip().lower()
-    title = (data.get("title") or "video").strip()
+    title = (data.get("title") or "media").strip()
 
     if not url:
         return jsonify({"success": False, "error": "URL missing"}), 400
@@ -949,7 +1197,7 @@ def start_download():
     if len(url) > 2048:
         return jsonify({"success": False, "error": "URL length exceeded limit"}), 400
 
-    allowed_qualities = {"best", "1080", "720", "480", "360", "mp3"}
+    allowed_qualities = {"best", "1080", "720", "480", "360", "mp3", "photo_hd", "photo_sd", "photo", "image"}
     if quality not in allowed_qualities:
         quality = "best"
 
@@ -1041,11 +1289,23 @@ def download_file(task_id):
         abort(403, description="Access forbidden: Path outside downloads directory")
 
     filename = (task.get("filename") if task else None) or os.path.basename(target_file)
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".mp3":
+        mimetype = "audio/mpeg"
+    elif ext in (".jpg", ".jpeg"):
+        mimetype = "image/jpeg"
+    elif ext == ".png":
+        mimetype = "image/png"
+    elif ext == ".webp":
+        mimetype = "image/webp"
+    else:
+        mimetype = "video/mp4"
+
     return send_file(
         real_filepath,
         as_attachment=True,
         download_name=filename,
-        mimetype="audio/mpeg" if filename.endswith(".mp3") else "video/mp4"
+        mimetype=mimetype
     )
 
 # --- Admin Engine Health & Cookie Manager ---
@@ -1111,13 +1371,13 @@ def admin_panel():
         </div>
 
         <div class="card">
-            <h3 style="margin-top:0; font-size: 16px; color:#38bdf8;">🍪 Instant YouTube Cookie Updater (Zero Redeploy)</h3>
-            <p style="font-size: 13px; color: #94a3b8; margin: 4px 0 12px;">If YouTube ever rolls out strict bot walls, paste fresh Netscape cookies here to activate them instantly without restarting or pushing code.</p>
+            <h3 style="margin-top:0; font-size: 16px; color:#38bdf8;">🍪 Universal Cookie Updater (YouTube, Instagram & Facebook)</h3>
+            <p style="font-size: 13px; color: #94a3b8; margin: 4px 0 12px;">Paste Netscape format cookies here for YouTube, Instagram, or Facebook. This instantly unlocks Instagram Stories, Private Reels, Facebook media, and YouTube bot walls without restarting or redeploying code.</p>
             <form method="POST" action="/api/admin/update-cookies">
                 <label style="font-size:12px; color:#94a3b8;">Admin Secret PIN:</label>
                 <input type="password" name="admin_secret" value="{key}" placeholder="Enter admin PIN (default: admin888)" style="margin-bottom: 10px;">
                 <label style="font-size:12px; color:#94a3b8;">Paste Netscape Cookie File Content:</label>
-                <textarea name="cookies_content" placeholder="# Netscape HTTP Cookie File&#10;.youtube.com\tTRUE\t/\tTRUE..."></textarea>
+                <textarea name="cookies_content" placeholder="# Netscape HTTP Cookie File&#10;.youtube.com\tTRUE\t/\tTRUE...&#10;.instagram.com\tTRUE\t/\tTRUE...&#10;.facebook.com\tTRUE\t/\tTRUE..."></textarea>
                 <button type="submit">💾 Save & Activate Cookies</button>
             </form>
         </div>
