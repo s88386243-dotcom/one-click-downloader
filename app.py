@@ -65,6 +65,44 @@ TASKS_DIR = os.path.join(DOWNLOADS_DIR, "task_states")
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 os.makedirs(TASKS_DIR, exist_ok=True)
 
+def add_instagram_session_cookie(session_val):
+    """Format and save Instagram sessionid into cookies.txt."""
+    if not session_val:
+        return False
+    cookie_path = os.path.join(BASE_DIR, "cookies.txt")
+    s = session_val.strip()
+    if "sessionid=" in s:
+        s = s.split("sessionid=")[-1].split(";")[0].strip()
+    
+    user_id_m = re.match(r"^(\d+)", s)
+    user_id = user_id_m.group(1) if user_id_m else "0"
+
+    existing = ""
+    if os.path.exists(cookie_path):
+        try:
+            with open(cookie_path, "r", encoding="utf-8") as f:
+                existing = f.read()
+        except Exception:
+            existing = ""
+
+    lines = [l for l in existing.splitlines() if not (".instagram.com" in l and ("sessionid" in l or "ds_user_id" in l))]
+    lines.append(f".instagram.com\tTRUE\t/\tTRUE\t2147483647\tsessionid\t{s}")
+    if user_id != "0":
+        lines.append(f".instagram.com\tTRUE\t/\tTRUE\t2147483647\tds_user_id\t{user_id}")
+    
+    try:
+        with open(cookie_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return True
+    except Exception as e:
+        print(f"[Error] Failed to write instagram session to cookies.txt: {e}")
+        return False
+
+# Initialize and sync cookies from environment
+env_ig_session = os.environ.get("INSTAGRAM_SESSION_ID")
+if env_ig_session:
+    add_instagram_session_cookie(env_ig_session)
+
 # Shared persistent task storage across multiple Gunicorn workers
 def get_task_state(task_id):
     """Retrieve task state from disk so any Gunicorn worker process can read it."""
@@ -329,26 +367,62 @@ def cleanup_old_files():
 cleanup_thread = threading.Thread(target=cleanup_old_files, daemon=True)
 cleanup_thread.start()
 
-# Auto-update yt-dlp periodically in background so YouTube algorithm changes never break downloads
-def auto_update_ytdlp_daemon():
-    """Continuously keep yt-dlp and yt-dlp-ejs updated to the latest version."""
-    time.sleep(20)  # wait 20s after boot
+# --- 24/7 Keep-Alive Daemon to Prevent Antideploy Idle Sleep & PingGuardBot 8s Timeouts ---
+def keep_alive_daemon():
+    """
+    Antideploy free containers sleep after 15 minutes of inactivity, causing
+    cold-start delays of 10-20 seconds that trigger PingGuardBot's 8s timeout alert.
+    This background daemon pings the health endpoint every 4 minutes to keep
+    the container permanently warm, awake, and 100% responsive.
+    """
+    time.sleep(30)  # Wait 30s after boot
+    app_url = os.environ.get("SITE_URL", "https://one-click-downloader.antideploy.app")
     while True:
         try:
-            print("[+] Running auto-update check for yt-dlp and yt-dlp-ejs...")
-            res = subprocess.run(
+            req = urllib.request.Request(
+                f"{app_url}/health",
+                headers={"User-Agent": "OneClick-KeepAlive/2.0"}
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                pass
+        except Exception:
+            pass
+        time.sleep(240)  # Ping every 4 minutes
+
+keep_alive_thread = threading.Thread(target=keep_alive_daemon, daemon=True)
+keep_alive_thread.start()
+
+# Optimized single-process auto-updater with lock file to prevent CPU/memory spikes
+def auto_update_ytdlp_daemon():
+    """Periodically check yt-dlp updates in background without starving Gunicorn memory/CPU at boot."""
+    time.sleep(21600)  # Wait 6 hours after boot before first check
+    while True:
+        try:
+            lock_file = os.path.join(DOWNLOADS_DIR, ".update.lock")
+            now = time.time()
+            if os.path.exists(lock_file) and now - os.path.getmtime(lock_file) < 36000:
+                time.sleep(3600)
+                continue
+            with open(lock_file, "w") as f:
+                f.write(str(now))
+            subprocess.run(
                 [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp", "yt-dlp-ejs", "--no-cache-dir"],
                 capture_output=True,
                 text=True,
                 timeout=180
             )
-            print("[+] yt-dlp and yt-dlp-ejs auto-update check completed.")
-        except Exception as e:
-            print(f"[-] yt-dlp auto-update notice: {e}")
-        time.sleep(43200)  # Check every 12 hours
+        except Exception:
+            pass
+        time.sleep(43200)
 
 auto_update_thread = threading.Thread(target=auto_update_ytdlp_daemon, daemon=True)
 auto_update_thread.start()
+
+@app.route("/health")
+@app.route("/ping")
+def health_check():
+    """Ultra-fast, zero-overhead health check for PingGuardBot and keep-alive."""
+    return jsonify({"status": "ok", "service": "one-click-downloader", "uptime": "active"}), 200
 
 @app.route("/")
 def index():
@@ -920,7 +994,7 @@ def get_video_info():
         err_msg = str(e)
         err_lower = err_msg.lower()
         if "/stories/" in url.lower():
-            err_text = "Instagram / Facebook Stories 24-ghante ke liye hoti hain aur Meta inke liye login maangta hai. Story download karne ke liye Admin panel (/admin) me cookies save karein, ya public Reel / Post ka link paste karein."
+            err_text = "Instagram Stories 24-ghante ke liye private hoti hain aur Meta inke liye account session maangta hai. Agar aap website owner hain, toh Admin Panel (/admin) me 1-click me Instagram sessionid daal kar Story downloads activate kar sakte hain. Public Reels aur Posts bina kisi login ke 100% download ho rahe hain."
         elif "private video" in err_lower or "login" in err_lower or "this content is only available" in err_lower:
             err_text = "Yeh video ya photo private hai ya isme login ki zaroorat hai. Kripya public link use karein ya Admin panel me cookies add karein."
         elif "this video is unavailable" in err_lower:
@@ -1313,13 +1387,22 @@ ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "admin888")
 
 @app.route("/admin", methods=["GET"])
 def admin_panel():
-    """Lightweight admin dashboard to monitor engine health and update YouTube cookies on the fly."""
+    """Lightweight admin dashboard to monitor engine health and update YouTube and Instagram cookies on the fly."""
     key = request.args.get("key", "").strip()
     is_authenticated = (key == ADMIN_SECRET)
     
     cookie_path = os.path.join(BASE_DIR, "cookies.txt")
     has_cookies = os.path.isfile(cookie_path) and os.path.getsize(cookie_path) > 10
     cookie_size = os.path.getsize(cookie_path) if os.path.isfile(cookie_path) else 0
+
+    has_ig_session = False
+    if os.path.isfile(cookie_path):
+        try:
+            with open(cookie_path, "r", encoding="utf-8") as f:
+                c_data = f.read()
+                has_ig_session = ".instagram.com" in c_data and "sessionid" in c_data
+        except Exception:
+            pass
 
     ytdlp_ver = getattr(yt_dlp, "__version__", "Unknown")
 
@@ -1337,7 +1420,7 @@ def admin_panel():
         .badge-green {{ background: #065f46; color: #34d399; }}
         .badge-yellow {{ background: #854d0e; color: #fde047; }}
         .card {{ background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 16px; margin: 16px 0; }}
-        textarea {{ width: 100%; box-sizing: border-box; height: 160px; background: #1e293b; border: 1px solid #475569; color: #f8fafc; font-family: monospace; font-size: 12px; border-radius: 6px; padding: 10px; margin-top: 8px; }}
+        textarea {{ width: 100%; box-sizing: border-box; height: 140px; background: #1e293b; border: 1px solid #475569; color: #f8fafc; font-family: monospace; font-size: 12px; border-radius: 6px; padding: 10px; margin-top: 8px; }}
         input[type="text"], input[type="password"] {{ background: #1e293b; border: 1px solid #475569; color: #f8fafc; padding: 8px 12px; border-radius: 6px; font-size: 14px; width: 100%; box-sizing: border-box; }}
         button {{ background: #2563eb; color: white; border: none; padding: 10px 18px; border-radius: 6px; font-weight: 600; cursor: pointer; margin-top: 10px; transition: 0.2s; }}
         button:hover {{ background: #1d4ed8; }}
@@ -1357,27 +1440,45 @@ def admin_panel():
                 <div class="stat-val"><span class="badge badge-green">VisionOS Waterfall</span></div>
             </div>
             <div class="stat-box">
-                <div class="stat-label">Instagram / FB</div>
-                <div class="stat-val"><span class="badge badge-green">Operational</span></div>
+                <div class="stat-label">Instagram Reels / Posts</div>
+                <div class="stat-val"><span class="badge badge-green">Public (No-Login)</span></div>
             </div>
             <div class="stat-box">
-                <div class="stat-label">yt-dlp Version</div>
-                <div class="stat-val">{ytdlp_ver}</div>
+                <div class="stat-label">Instagram Stories</div>
+                <div class="stat-val"><span class="badge {'badge-green' if has_ig_session else 'badge-yellow'}">{'Active (Unlocked)' if has_ig_session else 'Needs sessionid'}</span></div>
             </div>
             <div class="stat-box">
-                <div class="stat-label">Cookies Status</div>
-                <div class="stat-val"><span class="badge {'badge-green' if has_cookies else 'badge-yellow'}">{'Active (' + str(cookie_size) + ' B)' if has_cookies else 'No Cookie (VisionOS Active)'}</span></div>
+                <div class="stat-label">Cookies File</div>
+                <div class="stat-val"><span class="badge {'badge-green' if has_cookies else 'badge-yellow'}">{'Active (' + str(cookie_size) + ' B)' if has_cookies else 'Empty'}</span></div>
+            </div>
+        </div>
+
+        <div class="card" style="border: 1px solid #e1306c;">
+            <h3 style="margin-top:0; font-size: 16px; color:#e1306c;">📸 1-Click Instagram Story Unlocker</h3>
+            <p style="font-size: 13px; color: #94a3b8; margin: 4px 0 12px;">Instagram Stories 24-ghante ke liye private hoti hain aur Meta inke liye login session maangta hai. Apne dummy ya personal account ka <code>sessionid</code> yahan paste karein. Iske baad aapki website par har user bina login kiye saari Stories download kar sakega!</p>
+            <form method="POST" action="/api/admin/update-instagram-session">
+                <label style="font-size:12px; color:#94a3b8;">Admin Secret PIN:</label>
+                <input type="password" name="admin_secret" value="{key}" placeholder="Enter admin PIN (default: admin888)" style="margin-bottom: 10px;">
+                <label style="font-size:12px; color:#94a3b8;">Instagram sessionid value:</label>
+                <input type="text" name="instagram_session" placeholder="e.g. 67891234567%3Abc987xyz... (or sessionid=...)" style="margin-bottom: 10px;">
+                <button type="submit" style="background:#e1306c;">🔓 Unlock Instagram Stories For All Users</button>
+            </form>
+            <div style="margin-top:12px; font-size: 12px; color:#94a3b8; background: #0f172a; padding: 10px; border-radius: 6px; border: 1px dashed #475569;">
+                <strong>💡 How to get sessionid in 20 seconds:</strong><br>
+                1. Chrome me <code>instagram.com</code> open karein (jahan aap logged in hain).<br>
+                2. Keyboard par <code>F12</code> dabayein &rarr; <strong>Application</strong> tab &rarr; Left me <strong>Cookies</strong> &rarr; <code>instagram.com</code> par click karein.<br>
+                3. Table me <strong>sessionid</strong> ka Value copy karke upar paste kar dein!
             </div>
         </div>
 
         <div class="card">
-            <h3 style="margin-top:0; font-size: 16px; color:#38bdf8;">🍪 Universal Cookie Updater (YouTube, Instagram & Facebook)</h3>
-            <p style="font-size: 13px; color: #94a3b8; margin: 4px 0 12px;">Paste Netscape format cookies here for YouTube, Instagram, or Facebook. This instantly unlocks Instagram Stories, Private Reels, Facebook media, and YouTube bot walls without restarting or redeploying code.</p>
+            <h3 style="margin-top:0; font-size: 16px; color:#38bdf8;">🍪 Universal Netscape Cookie Updater</h3>
+            <p style="font-size: 13px; color: #94a3b8; margin: 4px 0 12px;">Paste full Netscape format cookies here for YouTube, Instagram, or Facebook.</p>
             <form method="POST" action="/api/admin/update-cookies">
                 <label style="font-size:12px; color:#94a3b8;">Admin Secret PIN:</label>
                 <input type="password" name="admin_secret" value="{key}" placeholder="Enter admin PIN (default: admin888)" style="margin-bottom: 10px;">
                 <label style="font-size:12px; color:#94a3b8;">Paste Netscape Cookie File Content:</label>
-                <textarea name="cookies_content" placeholder="# Netscape HTTP Cookie File&#10;.youtube.com\tTRUE\t/\tTRUE...&#10;.instagram.com\tTRUE\t/\tTRUE...&#10;.facebook.com\tTRUE\t/\tTRUE..."></textarea>
+                <textarea name="cookies_content" placeholder="# Netscape HTTP Cookie File&#10;.youtube.com\tTRUE\t/\tTRUE...&#10;.instagram.com\tTRUE\t/\tTRUE..."></textarea>
                 <button type="submit">💾 Save & Activate Cookies</button>
             </form>
         </div>
@@ -1389,6 +1490,26 @@ def admin_panel():
 </body>
 </html>"""
     return html
+
+@app.route("/api/admin/update-instagram-session", methods=["POST"])
+def admin_update_instagram_session():
+    """Instantly save Instagram session ID and activate Story downloads."""
+    secret = request.form.get("admin_secret", "").strip() or (request.json or {}).get("admin_secret", "").strip()
+    if secret != ADMIN_SECRET:
+        return jsonify({"success": False, "error": "Unauthorized: Invalid admin secret PIN"}), 403
+
+    session_val = request.form.get("instagram_session", "").strip() or (request.json or {}).get("instagram_session", "").strip()
+    if not session_val:
+        return jsonify({"success": False, "error": "Instagram sessionid cannot be empty"}), 400
+
+    success = add_instagram_session_cookie(session_val)
+    if success:
+        return f"""<body style="background:#0f172a;color:#34d399;font-family:sans-serif;padding:40px;text-align:center;">
+            <h2>🎉 Instagram Stories Unlocked Successfully!</h2>
+            <p style="color:#94a3b8;">Your Instagram session has been formatted and saved to cookies.txt. All users can now download Instagram Stories on the site!</p>
+            <a href="/admin?key={secret}" style="color:#38bdf8;text-decoration:none;">⬅ Back to Admin</a>
+        </body>"""
+    return jsonify({"success": False, "error": "Could not write cookies"}), 500
 
 @app.route("/api/admin/update-cookies", methods=["POST"])
 def admin_update_cookies():
@@ -1407,7 +1528,7 @@ def admin_update_cookies():
             f.write(content)
         return """<body style="background:#0f172a;color:#34d399;font-family:sans-serif;padding:40px;text-align:center;">
             <h2>✅ Cookies updated successfully!</h2>
-            <p style="color:#94a3b8;">Fresh YouTube cookies have been saved to disk and activated.</p>
+            <p style="color:#94a3b8;">Fresh cookies have been saved to disk and activated.</p>
             <a href="/admin?key=""" + secret + """" style="color:#38bdf8;text-decoration:none;">⬅ Back to Admin</a>
         </body>"""
     except Exception as e:
