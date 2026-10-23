@@ -594,6 +594,105 @@ def download_stream_turbo(stream_url, dest_path, task_id, start_pct=0, end_pct=1
         print(f"[Warning] Turbo chunk download fallback ({e}), falling back to sequential stream...")
         return download_stream_to_file(stream_url, dest_path, task_id, start_pct, end_pct)
 
+def select_best_audio_stream(adaptive_formats):
+    """
+    Select the original/native audio track and reject synthetic AI auto-dubbed tracks.
+    YouTube's multi-language audio (Aloud AI dubbing) marks English auto-dubs as audioIsDefault=True.
+    This selector filters out auto-dubs and prioritizes the true native audio track (e.g. Hindi original).
+    """
+    audio_formats = [f for f in adaptive_formats if "audio" in f.get("mimeType", "") and f.get("url")]
+    if not audio_formats:
+        return None
+
+    def audio_score(f):
+        track = f.get("audioTrack") or {}
+        display_name = (track.get("displayName") or "").lower()
+        is_auto_dubbed = track.get("isAutoDubbed", False)
+        mime = f.get("mimeType", "").lower()
+        itag = f.get("itag", 0)
+
+        score = 0
+        # Heavily penalize AI auto-dubs
+        if is_auto_dubbed or "dubbed" in display_name or "auto" in display_name:
+            score -= 2000
+
+        # Prioritize original audio track
+        if "original" in display_name or "native" in display_name:
+            score += 1000
+
+        # Prioritize standard AAC (itag 140 or m4a/mp4) for direct container muxing
+        if itag == 140 or "mp4" in mime or "m4a" in mime:
+            score += 200
+
+        quality = (f.get("audioQuality") or "").lower()
+        if "high" in quality:
+            score += 100
+        elif "medium" in quality:
+            score += 50
+
+        # Fallback to audioIsDefault only if not auto-dubbed
+        if track.get("audioIsDefault") and not is_auto_dubbed:
+            score += 40
+
+        return score
+
+    audio_formats.sort(key=audio_score, reverse=True)
+    return audio_formats[0]
+
+def select_best_video_stream(adaptive_formats, quality="best"):
+    """
+    Select the optimal video stream for the requested resolution.
+    Strictly prioritizes universally compatible H.264 (avc1) codec over AV1 (av01) and VP9.
+    AV1 / VP9 cause black screen or 'audio only' playback on most Android and Windows media players.
+    """
+    video_formats = [f for f in adaptive_formats if "video" in f.get("mimeType", "") and f.get("url")]
+    if not video_formats:
+        return None
+
+    def video_score(f):
+        ql = (f.get("qualityLabel") or "").lower()
+        mime = (f.get("mimeType") or "").lower()
+
+        height = f.get("height") or 0
+        if not height:
+            for r in [2160, 1440, 1080, 720, 480, 360, 240, 144]:
+                if str(r) in ql:
+                    height = r
+                    break
+        fps = f.get("fps") or 30
+
+        score = 0
+        # Codec priority: H.264 (avc1) works seamlessly on 100% of mobile & PC devices
+        if "avc1" in mime or "h264" in mime:
+            score += 2500
+        elif "mp4" in mime and "av01" not in mime:
+            score += 1200
+        elif "vp9" in mime:
+            score -= 100
+        elif "av01" in mime:
+            score -= 2000  # Avoid AV1 - causes audio-only / black screen on most phones
+
+        target_res = 1080
+        if quality == "1080":
+            target_res = 1080
+        elif quality == "720":
+            target_res = 720
+        elif quality == "480":
+            target_res = 480
+        elif quality == "360":
+            target_res = 360
+        else:  # "best"
+            target_res = 1080  # 1080p is the maximum universal H.264 HD resolution
+
+        score -= abs(height - target_res) * 2
+        if fps >= 50:
+            score += 30
+
+        return score
+
+    video_formats.sort(key=video_score, reverse=True)
+    return video_formats[0]
+
 def download_youtube_via_rapidapi(task_id, vid, quality, title_hint):
     """Download YouTube video/audio using high-speed direct CDN streams from YT-API."""
     yt_data = fetch_youtube_rapidapi(vid)
@@ -602,15 +701,7 @@ def download_youtube_via_rapidapi(task_id, vid, quality, title_hint):
     prog_formats = [f for f in yt_data.get("formats", []) if f.get("url")]
     adapt_formats = [f for f in yt_data.get("adaptiveFormats", []) if f.get("url")]
     
-    audio_formats = [f for f in adapt_formats if "audio" in f.get("mimeType", "")]
-    best_audio = None
-    for f in audio_formats:
-        if f.get("itag") == 140 or "mp4" in f.get("mimeType", ""):
-            best_audio = f
-            break
-    if not best_audio and audio_formats:
-        best_audio = audio_formats[0]
-
+    best_audio = select_best_audio_stream(adapt_formats)
     final_output = None
 
     if quality == "mp3":
@@ -619,13 +710,13 @@ def download_youtube_via_rapidapi(task_id, vid, quality, title_hint):
         temp_audio = os.path.join(DOWNLOADS_DIR, f"{task_id}_temp_audio.m4a")
         final_mp3 = os.path.join(DOWNLOADS_DIR, f"{task_id}_{sanitized_title}.mp3")
         
-        update_task_state(task_id, status="downloading", speed="Downloading Audio...")
+        update_task_state(task_id, status="downloading", speed="Downloading Original Audio...")
         download_stream_turbo(best_audio["url"], temp_audio, task_id, 0, 85, max_workers=4)
         
         update_task_state(task_id, status="processing", speed="Converting to MP3...", percent=90)
         if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
             cmd = [FFMPEG_PATH, "-y", "-i", temp_audio, "-vn", "-ar", "44100", "-ac", "2", "-b:a", "192k", final_mp3]
-            res = subprocess.run(cmd, capture_output=True, timeout=120)
+            res = subprocess.run(cmd, capture_output=True, timeout=180)
             if os.path.exists(temp_audio):
                 try: os.remove(temp_audio)
                 except Exception: pass
@@ -636,62 +727,18 @@ def download_youtube_via_rapidapi(task_id, vid, quality, title_hint):
             final_output = temp_audio
             
     else:
-        target_prog = None
-        for f in prog_formats:
-            ql = f.get("qualityLabel", "")
-            if quality == "360" and "360" in ql:
-                target_prog = f
-                break
-            elif quality == "720" and "720" in ql:
-                target_prog = f
-                break
+        target_vid = select_best_video_stream(adapt_formats, quality)
 
-        if target_prog:
-            final_mp4 = os.path.join(DOWNLOADS_DIR, f"{task_id}_{sanitized_title}.mp4")
-            download_stream_turbo(target_prog["url"], final_mp4, task_id, 0, 98, max_workers=6)
-            final_output = final_mp4
-        else:
-            target_vid = None
-            video_formats = [f for f in adapt_formats if "video" in f.get("mimeType", "")]
-            
-            if quality == "1080":
-                for f in video_formats:
-                    if "1080" in f.get("qualityLabel", "") and "mp4" in f.get("mimeType", ""):
-                        target_vid = f
-                        break
-                if not target_vid:
-                    for f in video_formats:
-                        if "1080" in f.get("qualityLabel", ""):
-                            target_vid = f
-                            break
-            elif quality == "720":
-                for f in video_formats:
-                    if "720" in f.get("qualityLabel", "") and "mp4" in f.get("mimeType", ""):
-                        target_vid = f
-                        break
-            elif quality == "480":
-                for f in video_formats:
-                    if "480" in f.get("qualityLabel", ""):
-                        target_vid = f
-                        break
-
-            if not target_vid and video_formats:
-                mp4_vids = [f for f in video_formats if "mp4" in f.get("mimeType", "")]
-                target_vid = mp4_vids[0] if mp4_vids else video_formats[0]
-
-            if not target_vid:
-                raise Exception("Could not find suitable video stream.")
-
+        if target_vid and best_audio:
             temp_video = os.path.join(DOWNLOADS_DIR, f"{task_id}_temp_vid.mp4")
             temp_audio = os.path.join(DOWNLOADS_DIR, f"{task_id}_temp_aud.m4a")
             final_mp4 = os.path.join(DOWNLOADS_DIR, f"{task_id}_{sanitized_title}.mp4")
 
-            update_task_state(task_id, status="downloading", speed="Downloading Video...")
+            update_task_state(task_id, status="downloading", speed="Downloading HD Video...")
             download_stream_turbo(target_vid["url"], temp_video, task_id, 0, 75, max_workers=6)
 
-            if best_audio:
-                update_task_state(task_id, status="downloading", speed="Downloading Audio...")
-                download_stream_turbo(best_audio["url"], temp_audio, task_id, 75, 92, max_workers=4)
+            update_task_state(task_id, status="downloading", speed="Downloading Original Audio...")
+            download_stream_turbo(best_audio["url"], temp_audio, task_id, 75, 92, max_workers=4)
 
             update_task_state(task_id, status="processing", speed="Finalizing HD Video...", percent=95)
             if FFMPEG_PATH and os.path.exists(temp_video) and os.path.exists(temp_audio):
@@ -701,12 +748,13 @@ def download_youtube_via_rapidapi(task_id, vid, quality, title_hint):
                     "-i", temp_audio,
                     "-c:v", "copy",
                     "-c:a", "aac",
+                    "-b:a", "192k",
                     "-map", "0:v:0",
                     "-map", "1:a:0",
-                    "-shortest",
+                    "-movflags", "+faststart",
                     final_mp4
                 ]
-                res = subprocess.run(cmd, capture_output=True, timeout=120)
+                res = subprocess.run(cmd, capture_output=True, timeout=300)
                 try: os.remove(temp_video)
                 except Exception: pass
                 try: os.remove(temp_audio)
@@ -717,6 +765,21 @@ def download_youtube_via_rapidapi(task_id, vid, quality, title_hint):
                 final_output = final_mp4
             else:
                 final_output = temp_video
+
+        elif prog_formats:
+            target_prog = None
+            for f in prog_formats:
+                ql = f.get("qualityLabel", "")
+                if quality in ql:
+                    target_prog = f
+                    break
+            if not target_prog:
+                target_prog = prog_formats[0]
+            final_mp4 = os.path.join(DOWNLOADS_DIR, f"{task_id}_{sanitized_title}.mp4")
+            download_stream_turbo(target_prog["url"], final_mp4, task_id, 0, 98, max_workers=6)
+            final_output = final_mp4
+        else:
+            raise Exception("No suitable video stream found.")
 
     if final_output and os.path.exists(final_output):
         final_ext = os.path.splitext(final_output)[1]
@@ -1131,24 +1194,25 @@ def run_download_task(task_id, url, quality, title_hint):
         ydl_opts["ffmpeg_location"] = FFMPEG_PATH
 
     if is_yt:
+        ydl_opts["format_sort"] = ["vcodec:h264", "lang:original", "res:1080", "fps"]
         if quality == "mp3":
-            ydl_opts["format"] = "ba/b"
+            ydl_opts["format"] = "ba[format_note*=original][ext=m4a]/ba[format_note*=original]/ba[language!*=auto]/ba/b"
             ydl_opts["postprocessors"] = [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
                 "preferredquality": "192",
             }]
         elif quality == "1080":
-            ydl_opts["format"] = "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b/best"
+            ydl_opts["format"] = "bv*[height<=1080][vcodec^=avc]+ba[format_note*=original][ext=m4a]/bv*[height<=1080][vcodec^=avc]+ba[format_note*=original]/bv*[height<=1080][vcodec^=avc]+ba/bv*[height<=1080]+ba/b"
             ydl_opts["merge_output_format"] = "mp4"
         elif quality == "720":
-            ydl_opts["format"] = "bv*[height<=720]+ba/b[height<=720]/bv*+ba/b/best"
+            ydl_opts["format"] = "bv*[height<=720][vcodec^=avc]+ba[format_note*=original][ext=m4a]/bv*[height<=720][vcodec^=avc]+ba[format_note*=original]/bv*[height<=720][vcodec^=avc]+ba/bv*[height<=720]+ba/b"
             ydl_opts["merge_output_format"] = "mp4"
         elif quality == "480":
-            ydl_opts["format"] = "bv*[height<=480]+ba/b[height<=480]/bv*+ba/b/best"
+            ydl_opts["format"] = "bv*[height<=480][vcodec^=avc]+ba[format_note*=original][ext=m4a]/bv*[height<=480][vcodec^=avc]+ba[format_note*=original]/bv*[height<=480][vcodec^=avc]+ba/bv*[height<=480]+ba/b"
             ydl_opts["merge_output_format"] = "mp4"
         else:  # best
-            ydl_opts["format"] = "bv*+ba/b/best"
+            ydl_opts["format"] = "bv*[vcodec^=avc]+ba[format_note*=original][ext=m4a]/bv*[vcodec^=avc]+ba[format_note*=original]/bv*[vcodec^=avc]+ba/bv*+ba/best"
             ydl_opts["merge_output_format"] = "mp4"
 
         yt_strategies = []
