@@ -22,7 +22,7 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-from flask import Flask, render_template, request, jsonify, send_file, abort
+from flask import Flask, render_template, request, jsonify, send_file, abort, redirect
 
 # Configure FFmpeg: prioritize system ffmpeg (Linux/Docker) then fallback to imageio_ffmpeg
 FFMPEG_PATH = shutil.which("ffmpeg")
@@ -427,6 +427,12 @@ def health_check():
 @app.route("/")
 def index():
     return render_template("index.html")
+
+@app.route("/download-app")
+@app.route("/app.apk")
+def download_app_apk():
+    """Directly download the latest Android APK without opening GitHub."""
+    return redirect("https://github.com/s88386243-dotcom/one-click-downloader-app/releases/latest/download/OneClickDownloader.apk")
 
 @app.route("/sw.js")
 def serve_sw():
